@@ -3,6 +3,14 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.2.1] - 2026-10-30
+
+### 修复
+
+- 切换选中设备时右侧详情面板宽度仍会变化：详情面板内部子控件由 grid 管理，
+  之前调用的 `pack_propagate(False)` 对其不生效，现改为 `grid_propagate(False)`
+  并给值列设置最小宽度，面板尺寸恒定 238×380
+
 ## [1.2.0] - 2026-10-30
 
 从"Bolt 专用"走向"罗技接收器通用"，并补齐配对能力。

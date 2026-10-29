@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 import argparse
 import json
@@ -374,12 +374,15 @@ class App:
         body = ttk.Frame(outer)
         body.pack(fill="both", expand=True, pady=(8, 8))
 
-        # 详情面板：显式锁定宽高并关掉传播。不锁的话，不同设备的文本换行数不同，
-        # 面板请求高度跟着变，整个窗口会随选择"跳动"——这是布局稳定性的关键。
+        # 详情面板：显式锁定宽高并关掉传播。不锁的话，不同设备的文本宽度不同，
+        # 面板请求尺寸跟着变，整个窗口会随选择"跳动"——这是布局稳定性的关键。
+        # 注意：面板内部子控件用 grid 管理，必须调 grid_propagate(False)，
+        # pack_propagate 对 grid 布局的子控件不生效。
         detail = ttk.LabelFrame(body, text="设备详情", padding=(12, 10), width=238, height=380)
         detail.pack(side="right", fill="y", padx=(10, 0))
+        detail.grid_propagate(False)
         detail.pack_propagate(False)
-        detail.grid_columnconfigure(1, weight=1)
+        detail.grid_columnconfigure(1, weight=1, minsize=150)
         self._detail_vars: dict[str, tk.StringVar] = {}
         self._detail_status_lbl: ttk.Label | None = None
         for row, (key, label) in enumerate(
