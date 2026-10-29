@@ -1,0 +1,91 @@
+# -*- mode: python ; coding: utf-8 -*-
+"""PyInstaller 打包配置：Logi Bolt 接收器管理器（单目录发布）
+
+用法（在项目根目录执行）：
+    python -m PyInstaller --noconfirm --clean src\\BoltManager.spec
+
+产物：
+    dist\\BoltManager\\BoltManager.exe  （one-folder 形式，必须连同 _internal 一起分发）
+
+路径全部由 SPECPATH 推导，不再硬编码 Python 安装目录，
+换机器或换 Python 小版本都不需要改这个文件。
+"""
+import os
+
+from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_submodules
+
+# SPECPATH 由 PyInstaller 注入，指向本 spec 文件所在目录（src/）
+SRC_DIR = SPECPATH
+PROJECT_ROOT = os.path.dirname(SRC_DIR)
+
+
+def _find_hidapi_dll():
+    """按常见位置查找 hidapi.dll，返回绝对路径。"""
+    import sys
+
+    candidates = [
+        os.path.join(sys.base_prefix, "hidapi.dll"),                               # Windows 官方 Python
+        os.path.join(sys.base_prefix, "Library", "bin", "hidapi.dll"),             # conda
+        os.path.join(sys.base_prefix, "Lib", "site-packages", "hidapi", "hidapi.dll"),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    raise SystemExit("未找到 hidapi.dll，请先 pip install hidapi；已尝试：\n  " + "\n  ".join(candidates))
+
+
+HIDAPI_DLL = _find_hidapi_dll()
+
+binaries = [(HIDAPI_DLL, ".")]
+datas = collect_data_files("solaar")
+hiddenimports = [
+    "hidapi.hidapi_impl",
+    "logitech_receiver.base",
+    "logitech_receiver.receiver",
+]
+hiddenimports += collect_submodules("solaar.cli")
+
+
+a = Analysis(
+    [os.path.join(SRC_DIR, "bolt_manager.py")],
+    pathex=[SRC_DIR],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    noarchive=False,
+    optimize=0,
+)
+pyz = PYZ(a.pure)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name="BoltManager",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon=[os.path.join(SRC_DIR, "bolt.ico")],
+)
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name="BoltManager",
+)
