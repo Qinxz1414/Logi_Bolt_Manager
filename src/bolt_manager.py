@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.3.3"
+__version__ = "1.4.0"
 
 import argparse
 import json
@@ -57,9 +57,9 @@ def _print_error(message: str) -> None:
     print(f"错误: {message}", file=sys.stderr)
 
 
-def _cmd_list(as_json: bool) -> int:
+def _cmd_list(as_json: bool, path: str | None = None) -> int:
     try:
-        info = core.snapshot()
+        info = core.snapshot(path)
     except core.BoltError as exc:
         if as_json:
             print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2))
@@ -74,9 +74,9 @@ def _cmd_list(as_json: bool) -> int:
     return 0
 
 
-def _cmd_info(as_json: bool) -> int:
+def _cmd_info(as_json: bool, path: str | None = None) -> int:
     try:
-        info = core.snapshot()
+        info = core.snapshot(path)
     except core.BoltError as exc:
         if as_json:
             print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2))
@@ -97,9 +97,9 @@ def _cmd_info(as_json: bool) -> int:
     return 0
 
 
-def _cmd_unpair(slot: int, assume_yes: bool, as_json: bool) -> int:
+def _cmd_unpair(slot: int, assume_yes: bool, as_json: bool, path: str | None = None) -> int:
     try:
-        info = core.snapshot()
+        info = core.snapshot(path)
     except core.BoltError as exc:
         return _fail(exc, as_json)
 
@@ -127,7 +127,7 @@ def _cmd_unpair(slot: int, assume_yes: bool, as_json: bool) -> int:
             return 1
 
     try:
-        core.unpair_device(slot)
+        core.unpair_device(slot, path)
     except core.BoltError as exc:
         return _fail(exc, as_json)
 
@@ -147,7 +147,42 @@ def _fail(exc: Exception, as_json: bool) -> int:
     return 1
 
 
-def _cmd_pair(timeout: int, as_json: bool) -> int:
+def _cmd_receivers(as_json: bool) -> int:
+    """列出接入的所有接收器（供 --receiver N 选择）。"""
+    choices = core.list_receivers()
+    if not choices:
+        return _fail(core.ReceiverNotFound("未找到接入的接收器。"), as_json)
+    if as_json:
+        print(
+            json.dumps(
+                {"ok": True, "receivers": [{"index": i + 1, "name": c.name, "path": c.path} for i, c in enumerate(choices)]},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    else:
+        for i, c in enumerate(choices):
+            print(f"{i + 1}. {c.name}")
+    return 0
+
+
+# _resolve_receiver_index 的失败哨兵：None 是合法值（= 第一个接收器）
+_UNRESOLVED = object()
+
+
+def _resolve_receiver_index(index: int | None, as_json: bool) -> str | None:
+    """把 1 起的接收器序号解析成 HID 路径；None/未指定 → 第一个。"""
+    if index is None:
+        return None
+    choices = core.list_receivers()
+    if not 1 <= index <= len(choices):
+        names = "、".join(f"{i + 1}.{c.name}" for i, c in enumerate(choices)) or "无"
+        _fail(core.BoltError(f"接收器编号 {index} 不存在。当前接入：{names}（用 --receivers 查看）"), as_json)
+        return _UNRESOLVED
+    return choices[index - 1].path
+
+
+def _cmd_pair(timeout: int, as_json: bool, path: str | None = None) -> int:
     """交互式配对：进度写 stderr，结果写 stdout（管道下 JSON 可解析）。"""
 
     def notify(event: str, data: dict) -> None:
@@ -156,7 +191,7 @@ def _cmd_pair(timeout: int, as_json: bool) -> int:
             print(text, file=sys.stderr, flush=True)
 
     try:
-        dev = core.pair_device(notify, timeout=timeout)
+        dev = core.pair_device(notify, timeout=timeout, path=path)
     except core.BoltError as exc:
         return _fail(exc, as_json)
 
@@ -167,7 +202,7 @@ def _cmd_pair(timeout: int, as_json: bool) -> int:
     return 0
 
 
-def _cmd_watch(interval: float, as_json: bool) -> int:
+def _cmd_watch(interval: float, as_json: bool, path: str | None = None) -> int:
     """持续轮询，只在发生变化时输出（Ctrl+C 退出）。"""
     interval = max(interval, 0.5)
     last: dict[int, tuple[str, bool | None]] | None = None
@@ -183,7 +218,7 @@ def _cmd_watch(interval: float, as_json: bool) -> int:
         while True:
             stamp = time.strftime("%H:%M:%S")
             try:
-                info = core.snapshot()
+                info = core.snapshot(path)
             except core.BoltError as exc:
                 emit(f"[{stamp}] 错误: {exc}", {"time": stamp, "event": "error", "error": str(exc)})
                 time.sleep(interval)
@@ -224,6 +259,7 @@ def _cli(argv: list[str]) -> int:
         description="读取 Logi Bolt 接收器上的配对设备，并可解除配对。不带参数则打开图形界面。",
     )
     mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--receivers", action="store_true", help="列出接入的所有接收器后退出")
     mode.add_argument("--list", action="store_true", help="列出配对设备后退出")
     mode.add_argument("--info", action="store_true", help="显示接收器信息与设备详情后退出")
     mode.add_argument("--unpair", type=int, metavar="SLOT", help="解除指定槽位的配对")
@@ -237,30 +273,41 @@ def _cli(argv: list[str]) -> int:
         help="持续监控设备增减（默认每 2 秒），Ctrl+C 退出",
     )
     parser.add_argument("--json", action="store_true", help="以 JSON 输出（可与 --list/--info/--unpair 组合）")
+    parser.add_argument(
+        "--receiver",
+        type=int,
+        metavar="N",
+        help="选择第 N 个接收器（从 1 起，可用 --receivers 查看列表；默认第 1 个）",
+    )
     parser.add_argument("--timeout", type=int, default=30, metavar="SECONDS", help="--pair 的等待时长（默认 30 秒）")
     parser.add_argument("-y", "--yes", action="store_true", help="解除配对时不询问确认（脚本用）")
     parser.add_argument("--debug", action="store_true", help="打印 solaar/hidapi 调试日志到 stderr")
     parser.add_argument("--version", action="version", version=f"BoltManager {__version__}")
     args = parser.parse_args(argv)
 
-    if args.watch is not None:
-        _configure_logging(args.debug)
-        return _cmd_watch(args.watch, args.json)
-
-    if not (args.list or args.info or args.unpair is not None or args.pair):
-        if args.json or args.yes or args.timeout != 30:
-            parser.error("--json/--yes/--timeout 需要与 --list、--info、--unpair、--pair 或 --watch 一起使用")
+    if not (args.list or args.info or args.unpair is not None or args.pair or args.receivers or args.watch is not None):
+        if args.json or args.yes or args.timeout != 30 or args.receiver is not None:
+            parser.error("--json/--yes/--timeout/--receiver 需要与 --list、--info、--unpair、--pair、--receivers 或 --watch 一起使用")
         return -1  # 交给 GUI
 
     _configure_logging(args.debug)
 
+    if args.receivers:
+        return _cmd_receivers(args.json)
+
+    path = _resolve_receiver_index(args.receiver, args.json)
+    if path is _UNRESOLVED:
+        return 1  # 已输出错误
+
+    if args.watch is not None:
+        return _cmd_watch(args.watch, args.json, path)
     if args.unpair is not None:
-        return _cmd_unpair(args.unpair, args.yes, args.json)
+        return _cmd_unpair(args.unpair, args.yes, args.json, path)
     if args.pair:
-        return _cmd_pair(args.timeout, args.json)
+        return _cmd_pair(args.timeout, args.json, path)
     if args.info:
-        return _cmd_info(args.json)
-    return _cmd_list(args.json)
+        return _cmd_info(args.json, path)
+    return _cmd_list(args.json, path)
 
 
 # --------------------------------------------------------------------------- #
@@ -333,6 +380,8 @@ class App:
         self.q: queue.Queue = queue.Queue()
         self.busy = False
         self.info: core.ReceiverInfo | None = None
+        self._recv_path: str | None = None  # 当前选中的接收器（多接收器场景）
+        self._recv_choices: list[core.ReceiverChoice] = []
         self._auto_after: str | None = None
         self._closing = False
 
@@ -395,6 +444,15 @@ class App:
         # 接收器信息条
         head = ttk.LabelFrame(outer, text="接收器", padding=(10, 6, 10, 8))
         head.pack(fill="x")
+        # 接收器选择器：插了多个接收器时显示在标题行右侧，单接收器时隐藏。
+        # 必须先于标题 pack（side=right 先占右侧，否则标题占满整行把它挤下去）
+        self._recv_combo_row = ttk.Frame(head)
+        self._recv_combo_row.pack(side="right")
+        ttk.Label(self._recv_combo_row, text="接收器：", foreground="#666").pack(side="left")
+        self.cb_recv = ttk.Combobox(self._recv_combo_row, state="readonly", width=24)
+        self.cb_recv.pack(side="left")
+        self.cb_recv.bind("<<ComboboxSelected>>", self._on_recv_selected)
+        self._recv_combo_row.pack_forget()
         self.var_head = tk.StringVar(value="正在读取…")
         ttk.Label(head, textvariable=self.var_head, font=("Segoe UI", 11, "bold")).pack(anchor="w")
         self.var_sub = tk.StringVar(value="")
@@ -636,9 +694,15 @@ class App:
                 self._set_busy(False)
                 if tag == "refresh":
                     if ok:
-                        self._render(payload)
-                        stamp = time.strftime("%H:%M:%S")
-                        self.set_status(f"共 {len(payload.devices)} 台配对设备 · 最后刷新 {stamp}")
+                        choices, result = payload
+                        self._update_recv_choices(choices)
+                        if isinstance(result, core.ReceiverInfo):
+                            self._render(result)
+                            stamp = time.strftime("%H:%M:%S")
+                            self.set_status(f"共 {len(result.devices)} 台配对设备 · 最后刷新 {stamp}")
+                        else:
+                            # 快照失败但列表有效：照常更新下拉框，用户可切换到别的接收器
+                            self._render_failure(str(result))
                     else:
                         self._render_failure(payload)
                     # 每次刷新后重查冲突进程（用户可能中途启动/退出了 Options+）
@@ -742,7 +806,46 @@ class App:
         self._set_busy(True)
         if not quiet:
             self.set_status("正在读取接收器…")
-        self.run_bg(core.snapshot, "refresh")
+
+        def payload():
+            # 接收器列表即使快照失败也要带回来（比如另一个接收器坏了，还能切换）
+            choices = core.list_receivers()
+            try:
+                return choices, core.snapshot(self._recv_path)
+            except core.BoltError as exc:
+                return choices, exc
+
+        self.run_bg(payload, "refresh")
+
+    def _on_recv_selected(self, _event=None) -> None:
+        idx = self.cb_recv.current()
+        if 0 <= idx < len(self._recv_choices):
+            self._recv_path = self._recv_choices[idx].path
+            self.refresh(quiet=True)
+
+    def _update_recv_choices(self, choices: list[core.ReceiverChoice]) -> None:
+        """更新接收器下拉框：多接收器显示、单接收器隐藏；当前选择失效时回退到第一个。"""
+        self._recv_choices = choices
+        names = [c.name for c in choices]
+        if len(set(names)) != len(names):  # HID 枚举名可能雷同（如两个 "USB Receiver"），加序号区分
+            counts: dict[str, int] = {}
+            unique = []
+            for n in names:
+                counts[n] = counts.get(n, 0) + 1
+                unique.append(f"{n} #{counts[n]}")
+            names = unique
+        current = self.cb_recv.current()
+        self.cb_recv["values"] = names
+        if len(choices) > 1:
+            self._recv_combo_row.pack(side="right")
+            if not (0 <= current < len(choices)):
+                self._recv_path = choices[0].path
+                self.cb_recv.current(0)
+        else:
+            self._recv_combo_row.pack_forget()
+            self._recv_path = choices[0].path if choices else None
+            if choices:
+                self.cb_recv.current(0)
 
     def on_unpair(self) -> None:
         slot = self.selected_slot()
@@ -764,7 +867,7 @@ class App:
             return
         self._set_busy(True)
         self.set_status(f"正在解除槽位 {slot} 的配对…")
-        self.run_bg(lambda: core.unpair_device(slot), "unpair")
+        self.run_bg(lambda: core.unpair_device(slot, self._recv_path), "unpair")
 
     # ---------------- 添加设备（配对向导） ----------------
     def on_pair(self) -> None:
@@ -801,7 +904,9 @@ class App:
         self.set_status("配对进行中，请在设备上操作…")
         self.run_bg(
             lambda: core.run_pairing(
-                core.ReceiverSession(), notify=self._pair_notify, cancel=self._pair_cancel
+                core.ReceiverSession(path=self._recv_path),
+                notify=self._pair_notify,
+                cancel=self._pair_cancel,
             ),
             "pair",
         )

@@ -201,6 +201,14 @@ class DeviceInfo:
         return data
 
 
+@dataclass(frozen=True)
+class ReceiverChoice:
+    """接入主机的接收器候选项（多接收器选择用）。"""
+
+    path: str  # 该接收器长报文集合（Col02）的 HID 路径，作为唯一标识
+    name: str = "接收器"  # 枚举到的产品名，如 "Bolt Receiver"
+
+
 @dataclass
 class ReceiverInfo:
     """接收器自身的信息。"""
@@ -253,14 +261,15 @@ class ReceiverSession:
     构造时可直接传入 receiver 对象（单元测试用），跳过真实硬件。
     """
 
-    def __init__(self, receiver=None) -> None:
+    def __init__(self, receiver=None, path: str | None = None) -> None:
         self._receiver = receiver
+        self._path = path  # 指定要打开的接收器（多接收器场景）；None = 取第一个
 
     # ----- 生命周期 -----
     def open(self) -> ReceiverSession:
         if self._receiver is not None:
             return self
-        self._receiver = self._open_receiver()
+        self._receiver = self._open_receiver(self._path)
         return self
 
     def close(self) -> None:
@@ -281,11 +290,12 @@ class ReceiverSession:
 
     # ----- 内部 -----
     @staticmethod
-    def _open_receiver():
-        from logitech_receiver import base, exceptions, receiver
+    def _long_report_infos():
+        """枚举所有接入的接收器，返回每个接收器的长报文集合（Col02）信息。"""
+        from logitech_receiver import base, exceptions
 
         try:
-            infos = [i for i in base.receivers() if _LONG_REPORT_INTERFACE in i.path]
+            return [i for i in base.receivers() if _LONG_REPORT_INTERFACE in i.path]
         except exceptions.NoReceiver as exc:  # 枚举阶段的底层失败
             raise ReceiverNotFound(f"接收器无法访问：{exc}") from exc
         except OSError as exc:
@@ -294,12 +304,22 @@ class ReceiverSession:
                 "接收器可能被其它程序独占（Logi Options+ / Logi Tune / GHUB），请先退出它们。"
             ) from exc
 
+    @classmethod
+    def _open_receiver(cls, path: str | None = None):
+        from logitech_receiver import base, receiver
+
+        infos = cls._long_report_infos()
+
         if not infos:
             raise ReceiverNotFound(
                 "未找到 Logitech 接收器。\n"
                 "支持：Bolt (046D:C548)、优联 Unifying (C52B/C532)、Lightspeed (C539)、Nano。\n"
                 "请确认接收器已直接插在主机 USB 口上（不要走 Hub）。"
             )
+        if path is not None:
+            infos = [i for i in infos if str(i.path) == path]
+            if not infos:
+                raise ReceiverNotFound("指定的接收器不存在或已被拔出，请重新选择。")
 
         try:
             r = receiver.create_receiver(base, infos[0])
@@ -434,15 +454,36 @@ def _kind_of(device) -> str | None:
 # --------------------------------------------------------------------------- #
 # 便捷函数（一次性读快照）
 # --------------------------------------------------------------------------- #
-def snapshot() -> ReceiverInfo:
-    """打开接收器、读出信息与设备、关掉，返回快照。"""
-    with ReceiverSession() as session:
+def list_receivers() -> list[ReceiverChoice]:
+    """枚举所有接入的接收器（不做任何打开操作，只读 HID 描述）。
+
+    每个物理接收器对应一条长报文集合（Col02）记录，path 作为唯一标识。
+    枚举失败（没有接收器、被独占）返回空列表——调用方据此提示。
+    """
+    try:
+        infos = ReceiverSession._long_report_infos()
+    except BoltError:
+        return []
+    choices: list[ReceiverChoice] = []
+    seen: set[str] = set()
+    for i in infos:
+        p = str(i.path or "")
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        choices.append(ReceiverChoice(path=p, name=str(getattr(i, "product", None) or "接收器")))
+    return choices
+
+
+def snapshot(path: str | None = None) -> ReceiverInfo:
+    """打开接收器、读出信息与设备、关掉，返回快照。path 指定多接收器中的哪一个。"""
+    with ReceiverSession(path=path) as session:
         return session.info()
 
 
-def unpair_device(slot: int) -> int:
-    """解除指定槽位的配对（一次性会话）。"""
-    with ReceiverSession() as session:
+def unpair_device(slot: int, path: str | None = None) -> int:
+    """解除指定槽位的配对（一次性会话）。path 指定多接收器中的哪一个。"""
+    with ReceiverSession(path=path) as session:
         return session.unpair(slot)
 
 
@@ -599,9 +640,9 @@ def run_pairing(
     )
 
 
-def pair_device(notify, timeout: int = 30, cancel=None) -> DeviceInfo:
-    """配对新设备（一次性会话）。notify/cancel 语义见 run_pairing。"""
-    with ReceiverSession() as session:
+def pair_device(notify, timeout: int = 30, cancel=None, path: str | None = None) -> DeviceInfo:
+    """配对新设备（一次性会话）。notify/cancel 语义见 run_pairing。path 指定接收器。"""
+    with ReceiverSession(path=path) as session:
         return run_pairing(session, notify, timeout=timeout, cancel=cancel)
 
 
