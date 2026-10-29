@@ -75,4 +75,5 @@ tools\rebuild.cmd                :: 重新打包到 dist\BoltManager
 - 只做"列设备 + 解配对"，不做配对、不改 DPI/按键（需要按键重映射请用官方 Options+）。
 - 解除配对走的是 `Receiver._unpair_device()` 私有方法，Solaar 升级可能改名。
 - `--list` 与 GUI 共用同一进程逻辑，同一时刻只能有一个实例操作接收器。
+- `--list` 跑到 GBK 控制台时中文会乱码（编码问题，不影响功能）；先 `chcp 65001` 或直接用 `python src\bolt_manager.py --list`。
 - 补丁基于 Solaar **1.1.20** 的确切代码，升级 Solaar 后需重新对照 `docs/技术说明.md` 逐点合并。
