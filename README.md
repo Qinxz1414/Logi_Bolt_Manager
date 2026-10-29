@@ -50,7 +50,7 @@ Solaar 能干这些事，但它官方只支持 Linux；在 Windows 上直接装�
 ### 方式二：从源码运行（开发者）
 
 ```bat
-git clone <this-repo> && cd logi-bolt-manager
+git clone https://cnb.cool/liqui/logi-bolt-manager.git && cd logi-bolt-manager
 python -m venv .venv && .venv\Scripts\activate
 
 :: 注意必须分两步：solaar 的依赖声明里有 Windows 装不上的 PyGObject
@@ -158,8 +158,11 @@ tools\rebuild.cmd                          :: 自动下载 hidapi.dll 并打包 
 ```
 
 `src\BoltManager.spec` 按优先级查找 `hidapi.dll`：环境变量 `HIDAPI_DLL` → `build/hidapi/`（fetch 脚本产物）
-→ Python 安装目录。CI（`.github/workflows/ci.yml`）跑的就是这套流程，打 `v*` 标签会自动把
-exe + LICENSE + 补丁一起打包成 Release 附件。
+→ Python 安装目录。
+
+CI 双轨：GitHub Actions（`.github/workflows/ci.yml`，打 `v*` 标签自动打包 Release 附件）；
+CNB（`.cnb.yml`，push / PR 时跑 ruff + pytest）。exe 打包依赖 Windows 图形栈，只能在
+Windows 环境（本地 `rebuild.cmd` 或 GitHub Actions）执行。
 
 ## 开发与测试
 

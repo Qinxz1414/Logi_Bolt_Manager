@@ -1,0 +1,40 @@
+# CNB（cnb.cool）流水线：推送与 PR 时跑静态检查与单元测试。
+#
+# 说明：
+# - 测试只依赖 bolt_core（无硬件、无 solaar 导入），Linux 容器即可运行。
+# - tools/verify_patches.py 需要导入 tkinter 与已打补丁的 solaar，容器里没有
+#   图形栈，故不在 CI 验证；补丁校验由 apply_patches.py --check 在真机上做。
+# - 运行时依赖的安装方式见 README（solaar 需 --no-deps 两步安装）。
+
+main:
+  push:
+    - name: check
+      docker:
+        image: python:3.12
+      env:
+        PIP_CACHE_DIR: .pip-cache
+      stages:
+        - name: 安装工具
+          script: |
+            python -m pip install --upgrade pip
+            pip install ruff pytest
+        - name: 代码检查
+          script: ruff check src tools tests
+        - name: 单元测试
+          script: pytest tests -q
+
+  pull_request:
+    - name: check
+      docker:
+        image: python:3.12
+      env:
+        PIP_CACHE_DIR: .pip-cache
+      stages:
+        - name: 安装工具
+          script: |
+            python -m pip install --upgrade pip
+            pip install ruff pytest
+        - name: 代码检查
+          script: ruff check src tools tests
+        - name: 单元测试
+          script: pytest tests -q

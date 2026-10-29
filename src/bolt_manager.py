@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 import argparse
 import json
@@ -319,7 +319,7 @@ class App:
     def _build_ui(self) -> None:
         root = self.root
         root.title(f"Logi Bolt 接收器管理器 v{__version__}")
-        root.minsize(760, 500)
+        root.minsize(780, 540)
         icon = _asset_path("bolt.ico")
         if icon:
             try:
@@ -340,18 +340,24 @@ class App:
         head = ttk.LabelFrame(outer, text="接收器", padding=(10, 6, 10, 8))
         head.pack(fill="x")
         self.var_head = tk.StringVar(value="正在读取…")
-        ttk.Label(head, textvariable=self.var_head, font=("Segoe UI", 10)).pack(anchor="w")
+        ttk.Label(head, textvariable=self.var_head, font=("Segoe UI", 11, "bold")).pack(anchor="w")
         self.var_sub = tk.StringVar(value="")
-        ttk.Label(head, textvariable=self.var_sub, foreground="#666").pack(anchor="w", pady=(2, 0))
+        ttk.Label(head, textvariable=self.var_sub, foreground="#666", font=("Segoe UI", 9)).pack(
+            anchor="w", pady=(3, 0)
+        )
 
         # 主体：左表格 + 右详情
         body = ttk.Frame(outer)
         body.pack(fill="both", expand=True, pady=(8, 8))
 
-        detail = ttk.LabelFrame(body, text="设备详情", padding=(10, 8), width=200)
-        detail.pack(side="right", fill="y", padx=(8, 0))
+        # 详情面板：显式锁定宽高并关掉传播。不锁的话，不同设备的文本换行数不同，
+        # 面板请求高度跟着变，整个窗口会随选择"跳动"——这是布局稳定性的关键。
+        detail = ttk.LabelFrame(body, text="设备详情", padding=(12, 10), width=238, height=380)
+        detail.pack(side="right", fill="y", padx=(10, 0))
         detail.pack_propagate(False)
+        detail.grid_columnconfigure(1, weight=1)
         self._detail_vars: dict[str, tk.StringVar] = {}
+        self._detail_status_lbl: ttk.Label | None = None
         for row, (key, label) in enumerate(
             (
                 ("name", "名称"),
@@ -362,12 +368,24 @@ class App:
                 ("status", "连接"),
             )
         ):
-            ttk.Label(detail, text=label, foreground="#888").grid(row=row * 2, column=0, sticky="w")
+            ttk.Label(detail, text=label, foreground="#777").grid(
+                row=row, column=0, sticky="nw", padx=(0, 10), pady=(0, 10)
+            )
             var = tk.StringVar(value="—")
             self._detail_vars[key] = var
-            ttk.Label(detail, textvariable=var, wraplength=180, justify="left").grid(
-                row=row * 2 + 1, column=0, sticky="w", pady=(0, 6)
+            # 序列号/产品 ID 是定宽十六进制，用等宽字体更易读
+            mono = key in ("serial", "wpid")
+            lbl = ttk.Label(
+                detail,
+                textvariable=var,
+                wraplength=130,
+                justify="left",
+                anchor="nw",
+                font=("Consolas", 9) if mono else None,
             )
+            lbl.grid(row=row, column=1, sticky="new", pady=(0, 10))
+            if key == "status":
+                self._detail_status_lbl = lbl
 
         tree_wrap = ttk.Frame(body)
         tree_wrap.pack(side="left", fill="both", expand=True)
@@ -542,10 +560,12 @@ class App:
     # ---------------- 渲染 ----------------
     def _render(self, info: core.ReceiverInfo) -> None:
         self.info = info
-        serial = info.serial or "—"
-        short = serial if len(serial) <= 16 else serial[:12] + "…"
-        self.var_head.set(f"{info.name}　序列号 {short}　已配对 {info.paired}/{info.max_devices or '?'}")
-        self.var_sub.set(f"剩余可配对 {info.remaining_label}　·　接口 {_interface_text(info.path)}")
+        # 序列号完整显示，不再截断——这正是用户排查设备时最需要的字段
+        self.var_head.set(f"{info.name}　已配对 {info.paired}/{info.max_devices or '?'}")
+        self.var_sub.set(
+            f"序列号 {info.serial or '—'}　·　剩余可配对 {info.remaining_label}"
+            f"　·　接口 {_interface_text(info.path)}"
+        )
 
         keep = self.selected_slot()
         self.tree.delete(*self.tree.get_children())
@@ -594,6 +614,10 @@ class App:
         }
         for key, value in values.items():
             self._detail_vars[key].set(value)
+        # 连接状态着色：在线绿、离线灰，一眼可辨
+        if self._detail_status_lbl is not None:
+            color = {"在线": "#1a7f37", "离线": "#999999"}.get(values["status"], "#666666")
+            self._detail_status_lbl.config(foreground=color)
 
     def selected_slot(self) -> int | None:
         sel = self.tree.selection()
@@ -689,10 +713,14 @@ def _gui() -> int:
         return 1
 
     root = tk.Tk()
+    style = ttk.Style(root)
     try:
-        ttk.Style().theme_use("vista")
+        style.theme_use("vista")
     except tk.TclError:
         pass  # 非 Windows 主题不存在时忽略
+    # 行距放宽一点，表头加粗——密度太高会显得挤，也不利于扫读
+    style.configure("Treeview", rowheight=28)
+    style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"))
     App(root, settings)
     root.mainloop()
     return 0

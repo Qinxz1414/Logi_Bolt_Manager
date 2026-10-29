@@ -1,6 +1,6 @@
 [project]
 name = "logi-bolt-manager"
-version = "1.1.0"          # 与 src/bolt_manager.py 中的 __version__ 保持一致
+version = "1.1.1"          # 与 src/bolt_manager.py 中的 __version__ 保持一致
 description = "Windows GUI/CLI for listing and unpairing devices on a Logitech Logi Bolt receiver"
 readme = "README.md"
 requires-python = ">=3.10"
