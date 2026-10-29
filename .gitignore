@@ -21,3 +21,6 @@ desktop.ini
 # 编辑器
 .vscode/
 .idea/
+
+# 助手内部状态
+.workbuddy/
