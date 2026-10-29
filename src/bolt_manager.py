@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.3.1"
+__version__ = "1.3.2"
 
 import argparse
 import json
@@ -367,9 +367,15 @@ class App:
             foreground="#9a6700",
             font=("Segoe UI", 11, "bold"),
         ).pack(side="left", padx=(0, 6))
-        ttk.Label(self.conflict_bar, textvariable=self.var_conflict, foreground="#9a6700").pack(
-            side="left", fill="x", expand=True
-        )
+        # 文字不 expand（否则按钮被推到最右，窗口窄时挤出可视区），按钮紧跟文字之后；
+        # wraplength 限制文字最大宽度，进程名很长时换行而不是把按钮挤出去
+        ttk.Label(
+            self.conflict_bar,
+            textvariable=self.var_conflict,
+            foreground="#9a6700",
+            wraplength=520,
+            justify="left",
+        ).pack(side="left")
         self.btn_kill_conflicts = ttk.Button(
             self.conflict_bar, text="结束相关进程", width=14, command=self.on_kill_conflicts
         )
@@ -526,9 +532,10 @@ class App:
     def _warn_conflicts(self) -> None:
         """检测独占接收器的官方软件，显示/隐藏底部警告条。"""
         self._conflict_names = core.conflicting_processes()
-        names = ", ".join(self._conflict_names[:3]) + ("…" if len(self._conflict_names) > 3 else "")
+        names = ", ".join(self._conflict_names[:2]) + ("…" if len(self._conflict_names) > 2 else "")
         if self._conflict_names:
-            self.var_conflict.set(f"检测到 {names} 正在运行，可能独占接收器导致读取/配对失败。")
+            total = f"（共 {len(self._conflict_names)} 个进程）" if len(self._conflict_names) > 1 else ""
+            self.var_conflict.set(f"检测到 {names} {total}正在运行，可能独占接收器导致读取/配对失败。")
             self.conflict_bar.pack(side="bottom", fill="x", before=self._outer_frame)
         else:
             self.conflict_bar.pack_forget()
