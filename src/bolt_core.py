@@ -791,3 +791,46 @@ def conflicting_processes() -> list[str]:
         if name and any(name.startswith(m) for m in markers):
             found.append(name)
     return sorted(set(found))
+
+
+def kill_conflicting_processes(timeout: float = 3.0) -> tuple[list[str], list[str]]:
+    """结束可能独占接收器的官方软件进程（Logi Options+ / G HUB 等）。
+
+    先温和 terminate，等待 timeout 秒后对仍存活的进程强 kill，最后复查。
+
+    :returns: (已结束的进程名列表, 结束后仍在运行的进程名列表)
+    """
+    try:
+        import psutil
+    except ImportError:
+        return [], []
+
+    markers = ("logioptionsplus", "logitune", "lghub", "logitech")
+    targets: list[psutil.Process] = []
+    for proc in psutil.process_iter(["name"]):
+        try:
+            name = (proc.info.get("name") or "").lower()
+        except Exception:  # noqa: BLE001 - 进程可能已退出
+            continue
+        if name and any(name.startswith(m) for m in markers):
+            targets.append(proc)
+    if not targets:
+        return [], []
+
+    for proc in targets:
+        try:
+            proc.terminate()
+        except psutil.Error:
+            continue
+
+    _gone, alive = psutil.wait_procs(targets, timeout=timeout)
+    for proc in alive:
+        try:
+            proc.kill()
+        except psutil.Error:
+            continue
+    psutil.wait_procs(alive, timeout=1.0)
+
+    remaining = conflicting_processes()
+    attempted = sorted({(p.info.get("name") or p.name() or "").lower() for p in targets})
+    return attempted, remaining

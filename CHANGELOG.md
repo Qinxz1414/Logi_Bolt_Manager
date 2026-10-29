@@ -3,6 +3,20 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.3.0] - 2026-10-30
+
+### 新增
+
+- **冲突进程警告条 + 一键结束**：界面底部检测到 Logi Options+ / G HUB 等独占接收器的官方
+  软件时，显示黄色警告条及「结束相关进程」按钮；点击后温和 terminate → 等待 3 秒 →
+  对仍存活的进程强 kill，完成后自动重新读取接收器。每次刷新都会重查（用户可能中途
+  启动/退出了相关软件）；结束失败（权限不足）时在状态栏提示
+- 数据层新增 `kill_conflicting_processes()`（复用 `conflicting_processes()` 的进程匹配规则）
+
+### 测试
+
+- 新增 `tests/test_kill_conflicts.py`（假 psutil 验证正常结束 / 无冲突 / 权限不足三条路径），28 例全过
+
 ## [1.2.2] - 2026-10-30
 
 ### 修复

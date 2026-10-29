@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.2.2"
+__version__ = "1.3.0"
 
 import argparse
 import json
@@ -353,12 +353,31 @@ class App:
 
         # 先占住底部状态栏，再让主内容填充剩余空间（顺序反了状态栏会盖住工具栏）
         self.status = tk.StringVar(value="正在读取接收器…")
-        ttk.Label(root, textvariable=self.status, relief="sunken", anchor="w", padding=(8, 4)).pack(
-            fill="x", side="bottom"
+        self._status_lbl = ttk.Label(root, textvariable=self.status, relief="sunken", anchor="w", padding=(8, 4))
+        self._status_lbl.pack(fill="x", side="bottom")
+
+        # 冲突进程警告条：检测到 Logi Options+ / G HUB 等独占接收器的软件时显示。
+        # 平时 pack_forget 隐藏；显示时用 before=outer 插在状态栏之上、主内容之下。
+        self._conflict_names: list[str] = []
+        self.var_conflict = tk.StringVar(value="")
+        self.conflict_bar = ttk.Frame(root, padding=(12, 6))
+        ttk.Label(
+            self.conflict_bar,
+            text="⚠",
+            foreground="#9a6700",
+            font=("Segoe UI", 11, "bold"),
+        ).pack(side="left", padx=(0, 6))
+        ttk.Label(self.conflict_bar, textvariable=self.var_conflict, foreground="#9a6700").pack(
+            side="left", fill="x", expand=True
         )
+        self.btn_kill_conflicts = ttk.Button(
+            self.conflict_bar, text="结束相关进程", width=14, command=self.on_kill_conflicts
+        )
+        self.btn_kill_conflicts.pack(side="left", padx=(8, 0))
 
         outer = ttk.Frame(root, padding=(12, 12, 12, 8))
         outer.pack(fill="both", expand=True)
+        self._outer_frame = outer
 
         # 接收器信息条
         head = ttk.LabelFrame(outer, text="接收器", padding=(10, 6, 10, 8))
@@ -505,11 +524,33 @@ class App:
         self.cb_auto.set(label)
 
     def _warn_conflicts(self) -> None:
-        conflicts = core.conflicting_processes()
-        if not conflicts:
+        """检测独占接收器的官方软件，显示/隐藏底部警告条。"""
+        self._conflict_names = core.conflicting_processes()
+        names = ", ".join(self._conflict_names[:3]) + ("…" if len(self._conflict_names) > 3 else "")
+        if self._conflict_names:
+            self.var_conflict.set(f"检测到 {names} 正在运行，可能独占接收器导致读取/配对失败。")
+            self.conflict_bar.pack(side="bottom", fill="x", before=self._outer_frame)
+        else:
+            self.conflict_bar.pack_forget()
+
+    def on_kill_conflicts(self) -> None:
+        """结束冲突进程（后台线程执行，完成后自动刷新）。"""
+        if not self._conflict_names or self.busy:
             return
-        names = ", ".join(conflicts[:3]) + ("…" if len(conflicts) > 3 else "")
-        self.set_status(f"提示：检测到 {names} 在运行。若读取或解除配对失败，请先退出它再重试。")
+        self.btn_kill_conflicts.config(state="disabled")
+        self.set_status("正在结束冲突进程…")
+        self.run_bg(core.kill_conflicting_processes, "kill_conflicts")
+
+    def _finish_kill_conflicts(self, killed: list[str], remaining: list[str]) -> None:
+        self.btn_kill_conflicts.config(state="normal")
+        if remaining:
+            names = ", ".join(remaining[:3]) + ("…" if len(remaining) > 3 else "")
+            self.set_status(f"部分进程结束失败（可能需要管理员权限）：{names}。")
+            self._warn_conflicts()
+            return
+        self._warn_conflicts()
+        self.set_status(f"已结束 {len(killed)} 个冲突进程 ✔ 正在重新读取接收器…")
+        self.refresh(quiet=True)
 
     def on_auto_changed(self) -> None:
         seconds = AUTO_REFRESH_CHOICES.get(self.cb_auto.get(), 0)
@@ -584,6 +625,10 @@ class App:
                         self.set_status(f"共 {len(payload.devices)} 台配对设备 · 最后刷新 {stamp}")
                     else:
                         self._render_failure(payload)
+                    # 每次刷新后重查冲突进程（用户可能中途启动/退出了 Options+）
+                    self._warn_conflicts()
+                elif tag == "kill_conflicts":
+                    self._finish_kill_conflicts(payload[0], payload[1])
                 elif tag == "pair_progress":
                     self._update_pair_dialog(payload)
                 elif tag == "pair":
