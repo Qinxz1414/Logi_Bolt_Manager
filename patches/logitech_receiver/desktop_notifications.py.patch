@@ -1,0 +1,27 @@
+diff --git a/logitech_receiver/desktop_notifications.py b/logitech_receiver/desktop_notifications.py
+--- a/logitech_receiver/desktop_notifications.py
++++ b/logitech_receiver/desktop_notifications.py
+@@ -13,6 +13,14 @@
+ ## You should have received a copy of the GNU General Public License along
+ ## with this program; if not, write to the Free Software Foundation, Inc.,
+ ## 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
++## ---------------------------------------------------------------------------
++## MODIFIED FILE - not the original Solaar source.
++## Project: BoltManager - Windows GUI for Logi Bolt receivers
++## Date:    2026-10-29
++## Base:    Solaar 1.1.20 (GPL-2.0-or-later, see LICENSE)
++## Change:  Notification probe also catches ImportError, so logitech_receiver still imports on
++##          Windows systems without PyGObject/GTK.
++## ---------------------------------------------------------------------------
+ 
+ """Implements the desktop notification service."""
+ 
+@@ -36,7 +44,7 @@
+         importlib.util.find_spec("gi.repository.Notify")
+ 
+         notifications_supported = True
+-    except ValueError as e:
++    except (ImportError, ValueError) as e:
+         logger.warning(f"Notification service is not available: {e}")
+     return notifications_supported
+ 

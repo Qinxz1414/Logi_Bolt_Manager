@@ -1,0 +1,27 @@
+diff --git a/logitech_receiver/receiver.py b/logitech_receiver/receiver.py
+--- a/logitech_receiver/receiver.py
++++ b/logitech_receiver/receiver.py
+@@ -14,6 +14,14 @@
+ ## You should have received a copy of the GNU General Public License along
+ ## with this program; if not, write to the Free Software Foundation, Inc.,
+ ## 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
++## ---------------------------------------------------------------------------
++## MODIFIED FILE - not the original Solaar source.
++## Project: BoltManager - Windows GUI for Logi Bolt receivers
++## Date:    2026-10-29
++## Base:    Solaar 1.1.20 (GPL-2.0-or-later, see LICENSE)
++## Change:  extract_serial() tolerates a None reply instead of raising AttributeError when a Bolt
++##          receiver does not answer the unique-id register.
++## ---------------------------------------------------------------------------
+ 
+ from __future__ import annotations
+ 
+@@ -85,7 +93,7 @@
+ 
+ def extract_serial(response: bytes) -> str:
+     """Extracts serial number from receiver response."""
+-    return response.hex().upper()
++    return response.hex().upper() if response is not None else None
+ 
+ 
+ def extract_max_devices(response: bytes) -> int:

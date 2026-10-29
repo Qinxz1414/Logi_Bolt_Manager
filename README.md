@@ -1,79 +1,216 @@
-# Logi Bolt 接收器管理器（BoltManager）
+# Logi Bolt 接收器管理器 · BoltManager
 
-给 Windows 用的罗技 **Logi Bolt** 接收器小工具：读取接收器上已配对的设备清单，并能解除指定设备的配对。
-底层复用 **Solaar 1.1.20** 的 `logitech_receiver`，针对 Windows + Bolt 接收器（`046D:C548`）打了补丁——这也是本项目最主要的技术价值所在。
+![license](https://img.shields.io/badge/license-GPL--2.0--or--later-blue)
+![platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-lightgrey)
+![python](https://img.shields.io/badge/python-3.10%2B-3776ab)
+![solaar](https://img.shields.io/badge/solaar-1.1.20-informational)
 
+**Windows 上的罗技 Logi Bolt 接收器小工具**：读取接收器里已配对的设备清单，把不用的设备从接收器里清掉。
+底层复用 [Solaar](https://github.com/pwr-Solaar/Solaar) 的 HID++ 协议实现，并为 Windows 的 HID 传输层打了补丁。
+
+> **English**: A small Windows GUI/CLI to list and unpair devices on a Logitech **Logi Bolt** receiver
+> (`046D:C548`). Solaar 1.1.20 already speaks the Bolt protocol, but its HID layer assumes one handle can
+> send both short and long HID++ reports — which Windows forbids for this receiver. This project ships the
+> minimal fix (`patches/`, 4 files, +138/−3 lines) plus a tkinter front-end.
+
+![界面截图](docs/screenshot.png)
+
+## 这个工具解决什么问题
+
+Logi Bolt 接收器在设备管理器里看着一切正常，但你会遇到这些情况：
+
+- 换过键鼠之后，**旧设备仍然占着接收器的配对槽位**，官方 Options+ 里根本不显示它们；
+- 手头只有接收器、没有官方软件，想知道"这颗接收器到底认过哪几台设备"；
+- 设备配对错乱，需要把某个槽位**强制解除配对**再重新配对。
+
+Solaar 能干这些事，但它官方只支持 Linux；在 Windows 上直接装，会遇到接收器枚举不到的问题
+（原因见 [docs/技术说明.md](docs/技术说明.md)：Bolt 接收器把长短报文拆成两个 HID 集合，
+而 Windows 严格校验报文长度，单句柄走不通）。
+
+## 功能
+
+- 列出接收器上所有配对设备：槽位、名称、序列号、在线状态
+- 解除指定设备的配对（写 Bolt 配对寄存器，不动设备本身，之后可重新配对）
+- 检测 Logi Options+ 是否在运行（它会独占接收器，导致操作失败）
+- 纯 tkinter 界面，零外部 GUI 依赖
+- 命令行模式：`--list`、`--list --json`，方便脚本化 / 排障
+- 打包成单目录 exe，目标机器不需要装 Python
+
+## 快速开始
+
+### 方式一：用现成的 exe（普通用户）
+
+1. 从 [Releases](../../releases) 下载 `BoltManager-<version>-win64.zip`
+2. 解压到任意目录（**必须整个文件夹一起**，`BoltManager.exe` 依赖同目录的 `_internal/`）
+3. 双击 `BoltManager.exe`，插着 Bolt 接收器即可看到设备列表
+
+> 首次运行若被 SmartScreen 拦下：这是未签名的开源程序，点"更多信息 → 仍要运行"。
+
+### 方式二：从源码运行（开发者）
+
+```bat
+git clone <this-repo> && cd logi-bolt-manager
+python -m venv .venv && .venv\Scripts\activate
+
+:: 注意必须分两步：solaar 的依赖声明里有 Windows 装不上的 PyGObject
+pip install --no-deps solaar==1.1.20
+pip install -r requirements.txt
+
+:: 关键两步：应用 Windows 传输层补丁 + 下载官方 hidapi.dll
+python tools\apply_patches.py
+python tools\fetch_hidapi.py
+
+python src\bolt_manager.py --list      :: 先确认能读到设备
+python src\bolt_manager.py             :: 打开图形界面
 ```
-设备管理器里显示正常、但设备"消失"了 → 用它看接收器里到底还挂着谁
-换过鼠标键盘、想把旧设备从接收器里清掉 → 选中 → 解除配对
+
+## 用法
+
+### 图形界面
+
+| 操作 | 说明 |
+| --- | --- |
+| 刷新 | 重新读取接收器（读 HID 会阻塞，已放到后台线程） |
+| 解除所选设备配对 | 选中行后点击，或直接双击该行；有二次确认 |
+| 状态栏 | 显示设备数量、错误信息，以及 Options+ 占用警告 |
+
+### 命令行
+
+```bat
+python src\bolt_manager.py --list              :: 人类可读
+python src\bolt_manager.py --list --json       :: 机器可读，便于脚本消费
+python src\bolt_manager.py --version
+python src\bolt_manager.py --list --debug      :: 打印 solaar/hidapi 调试日志
 ```
 
----
+`--list --json` 输出示例：
+
+```json
+{
+  "ok": true,
+  "devices": [
+    { "slot": 3, "name": "Alto Keys K98M Plus", "serial": "04F3A3E1", "online": true },
+    { "slot": 4, "name": "MX Master 3S", "serial": "BEFB13E3", "online": true }
+  ]
+}
+```
+
+读不到接收器时返回非 0 退出码，JSON 为 `{"ok": false, "error": "..."}`。
 
 ## 目录结构
 
-| 路径 | 内容 |
-| --- | --- |
-| `src/` | 应用源码 |
-| `src/bolt_manager.py` | 主程序：tkinter GUI + `--list` 命令行模式 |
-| `src/gen_icon.py` | 纯 Python 生成 `bolt.ico`（无第三方依赖） |
-| `src/BoltManager.spec` | PyInstaller 打包配置（路径自动推导，不硬编码） |
-| `patches/` | **已打补丁的 solaar 源码**，按 site-packages 目录结构摆放 |
-| `tools/` | 构建与调试脚本 |
-| `tools/rebuild.cmd` | 一键重新打包 exe |
-| `tools/apply_patches.cmd` | 一键把补丁还回当前 Python 的 site-packages |
-| `tools/solaar-cli.cmd` | 直接调用 solaar 命令行（排查问题时看详细日志） |
-| `dist/BoltManager/` | 打包产物（`BoltManager.exe` + `_internal/`） |
-| `docs/技术说明.md` | 补丁原理、HID++ / Bolt 协议细节 |
-
-## 直接使用
-
-双击 `dist/BoltManager/BoltManager.exe` 即可，**不需要装 Python**。
-注意这是 PyInstaller 的 one-folder 形式，`BoltManager.exe` 和同目录的 `_internal/` 必须待在一起，单独拷 exe 会启动失败。
-
-界面功能：
-- 自动列出接收器上的所有配对设备（槽位 / 名称 / 序列号 / 在线状态）
-- 选中设备 → 「解除所选设备配对」（双击行也可）
-- 状态栏会提示是否检测到 **Logi Options+ 正在运行**（它会抢占接收器，建议先退出）
-
-命令行模式（开发/排查用，要求本机 Python 环境已就绪）：
-
-```bat
-python src\bolt_manager.py --list
-:: 槽位1  MX Master 3S  序列号=xxxxxxxx  在线
+```
+logi-bolt-manager/
+├─ src/
+│  ├─ bolt_manager.py        # 主程序：数据层 + tkinter GUI + CLI
+│  ├─ gen_icon.py            # 纯 Python 生成 bolt.ico（无第三方依赖）
+│  ├─ bolt.ico
+│  └─ BoltManager.spec       # PyInstaller 打包配置（路径自动推导）
+├─ patches/                  # 对 Solaar 1.1.20 的补丁（unified diff）
+│  ├─ hidapi/hidapi_impl.py.patch
+│  └─ logitech_receiver/*.patch
+├─ tools/
+│  ├─ apply_patches.py       # 应用/撤销/检查补丁（跨平台）
+│  ├─ make_patches.py        # 从当前环境重新生成 patches/
+│  ├─ rebuild.cmd            # 一键打包 exe
+│  └─ solaar-cli.cmd         # 直接调用 solaar CLI，排查用
+├─ docs/
+│  ├─ 技术说明.md            # 根因分析、补丁逐条讲解、升级清单
+│  └─ screenshot.png
+├─ dist/BoltManager/         # 打包产物（不入库）
+├─ LICENSE                   # GPL-2.0
+└─ THIRD-PARTY-NOTICES.md    # 第三方组件与许可
 ```
 
-## 开发环境
+## 从源码构建 exe
+
+```bat
+pip install --no-deps solaar==1.1.20
+pip install -r requirements-dev.txt
+python tools\apply_patches.py             :: 应用补丁
+tools\rebuild.cmd                          :: 自动下载 hidapi.dll 并打包 → dist\BoltManager
+```
+
+`src\BoltManager.spec` 按优先级查找 `hidapi.dll`：环境变量 `HIDAPI_DLL` → `build/hidapi/`（fetch 脚本产物）
+→ Python 安装目录。CI（`.github/workflows/ci.yml`）跑的就是这套流程，打 `v*` 标签会自动把
+exe + LICENSE + 补丁一起打包成 Release 附件。
+
+## 补丁机制
+
+`patches/` 里是**标准 unified diff**，不是"改好的整份文件"，这样一眼能看出改了哪几行、方便 review
+和向上游提 PR：
+
+| 补丁 | 改动量 | 作用 |
+| --- | --- | --- |
+| `hidapi/hidapi_impl.py.patch` | +109 / −0 | Bolt 接收器双集合虚拟句柄；`0x83` 长寄存器读改走短报文 |
+| `logitech_receiver/base.py.patch` | +11 / −1 | `0x83` 长寄存器读也按 20 字节长报文封装 |
+| `logitech_receiver/receiver.py.patch` | +9 / −1 | `extract_serial()` 容错 `None` 回复 |
+| `logitech_receiver/desktop_notifications.py.patch` | +9 / −1 | 通知探测多捕获 `ImportError`（无 GTK 环境） |
+
+```bat
+python tools\apply_patches.py --check     :: 只检查，不落盘
+python tools\apply_patches.py             :: 应用（幂等，重复执行不会出错）
+python tools\apply_patches.py --revert    :: 逐字节还原成上游原样
+```
+
+补丁钉在 `solaar==1.1.20` 上，版本不符会明确报错而不是硬套。升级流程见
+[docs/技术说明.md 第 8 节](docs/技术说明.md#8-升级-solaar-时要做的事)。
+
+## 已验证环境
 
 | 项 | 值 |
 | --- | --- |
-| Python | 3.13（本机为 `C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12`） |
-| 依赖 | `solaar==1.1.20`、`hidapi`、`psutil`（运行时）、`pyinstaller`（打包） |
-| 关键前置 | `solaar` / `logitech_receiver` **必须是打完补丁的版本**，原版在 Windows 上读不到 Bolt 接收器 |
-
-从零复现环境：
-
-```bat
-python -m pip install solaar==1.1.20 hidapi psutil pyinstaller
-tools\apply_patches.cmd          :: 覆盖 4 个文件为补丁版
-python src\bolt_manager.py --list :: 验证能否读到设备
-tools\rebuild.cmd                :: 重新打包到 dist\BoltManager
-```
-
-## 故障排查
-
-| 现象 | 原因 / 处理 |
-| --- | --- |
-| 提示"未找到 Logi Bolt 接收器" | 接收器没插好、插在 USB Hub 上不稳，或设备管理器里 `MI_02` 接口被禁用；也可能是 Options+ 独占 |
-| 解除配对失败 | 先退出 Logi Options+ / Logi Tune，它们会和本工具抢同一个 HID 句柄 |
-| exe 换了机器打不开 | 只拷了 exe，漏了 `_internal/` 目录 |
-| 打包时报找不到 hidapi.dll | `pip install hidapi`，spec 会自动在 `sys.base_prefix` 下找 |
-| 想确认补丁是否生效 | `python -c "from logitech_receiver import base; print(hex(base.SOLAAR_SOFTWARE_ID))"` → 应为 `0xb` |
+| 系统 | Windows 10 / 11 x64 |
+| Python | 3.13 |
+| Solaar | 1.1.20（`patches/` 基于其原始源码生成） |
+| 实测设备 | Logi Bolt 接收器 + MX Master 3S、Alto Keys K98M Plus（槽位 3/4） |
 
 ## 已知限制
 
-- 只做"列设备 + 解配对"，不做配对、不改 DPI/按键（需要按键重映射请用官方 Options+）。
-- 解除配对走的是 `Receiver._unpair_device()` 私有方法，Solaar 升级可能改名。
-- `--list` 与 GUI 共用同一进程逻辑，同一时刻只能有一个实例操作接收器。
-- `--list` 跑到 GBK 控制台时中文会乱码（编码问题，不影响功能）；先 `chcp 65001` 或直接用 `python src\bolt_manager.py --list`。
-- 补丁基于 Solaar **1.1.20** 的确切代码，升级 Solaar 后需重新对照 `docs/技术说明.md` 逐点合并。
+- 只做"列设备 + 解配对"；配对、DPI、按键重映射请用官方 Options+。
+- 解除配对走的是 `Receiver._unpair_device()` 私有方法，Solaar 升级可能改名（补丁会失效并明确报错）。
+- Logi Options+ 运行时会独占接收器，操作前请先退出。
+- 同一时刻只应有一个实例操作接收器。
+- 未做代码签名，Windows 可能弹 SmartScreen 提示。
+- 仅 Windows。Linux 用户请直接用 Solaar（功能更全）。
+
+## 常见问题
+
+**提示"未找到 Logi Bolt 接收器"？**
+接收器没插好、插在劣质 USB Hub 上、或被 Options+ 独占。换个直连 USB 口试试，并确认设备管理器里
+`USB 输入设备` 下存在 `MI_02` 接口。
+
+**exe 换台机器打不开？**
+只拷了 exe。必须连 `_internal/` 目录一起拷。
+
+**解除配对失败？**
+先退出 Logi Options+ / Logi Tune；再确认没有别的程序（GHUB、LGSTrayEx 等 HID++ 客户端）在占用。
+
+**想确认补丁是否生效？**
+```bat
+python -c "import hidapi.hidapi_impl as h; print(hasattr(h,'_BoltSplitHandle'))"
+```
+返回 `True` 即已打补丁。
+
+## 参与贡献
+
+欢迎提 Issue / PR。请先读 [CONTRIBUTING.md](CONTRIBUTING.md)。特别欢迎两类反馈：
+
+- 更多 Bolt 设备（尤其是键盘/耳机）的实测结果，用于补全兼容性表；
+- 上游 Solaar 若已合并等价修复，请告知，本项目可以体面退休。
+
+## 许可与致谢
+
+- 本项目以 **GPL-2.0-or-later** 发布，见 [LICENSE](LICENSE)。之所以不是 MIT：`patches/` 修改了
+  GPL 项目 Solaar 的源码，衍生作品必须同许可。
+- 感谢 [Solaar](https://github.com/pwr-Solaar/Solaar) 作者 Daniel Pavel 与所有贡献者，
+  本项目的协议层几乎全部来自 Solaar。
+- 第三方组件（hidapi、OpenSSL、Tcl/Tk 等）的许可见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+- 分发本项目的二进制时，请一并保留 `LICENSE` 与本声明文件，并提供源代码获取方式（GPL 要求）。
+
+**商标声明**：Logitech、Logi、Bolt、MX 是 Logitech Europe S.A. 的商标。本项目是非官方第三方工具，
+与 Logitech 无隶属或背书关系。
+
+---
+
+如果这个工具帮你救回了一颗"失踪"的接收器，给个 ⭐ 就好。

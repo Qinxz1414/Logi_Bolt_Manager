@@ -1,0 +1,13 @@
+# 运行时依赖。
+#
+# 重要：solaar 自己的依赖声明里包含 PyGObject / pyudev / evdev 等 Linux 组件，
+# 在 Windows 上 pip 直接装 solaar 会因 PyGObject 构建失败。所以分两步：
+#
+#   pip install --no-deps solaar==1.1.20     # 只装 solaar 本体
+#   pip install -r requirements.txt          # Windows 下真正需要的三个
+#
+# 缺的 gi（GTK 绑定）由 src/bolt_manager.py 里的桩替代，详见 docs/技术说明.md。
+
+PyYAML>=5.4
+psutil>=5.9
+typing_extensions>=4.6

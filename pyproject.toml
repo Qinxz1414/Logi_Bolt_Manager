@@ -1,0 +1,42 @@
+[project]
+name = "logi-bolt-manager"
+version = "1.0.0"          # 与 src/bolt_manager.py 中的 __version__ 保持一致
+description = "Windows GUI/CLI for listing and unpairing devices on a Logitech Logi Bolt receiver"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-2.0-or-later" }
+authors = [{ name = "BoltManager contributors" }]
+keywords = ["logitech", "logi-bolt", "hidpp", "solaar", "windows", "receiver"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: GNU General Public License v2 or later (GPLv2+)",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Hardware :: Hardware Drivers",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "solaar==1.1.20",
+    "hidapi>=0.14",
+    "psutil>=5.9",
+]
+
+# 这是一个「应用」而不是库：不分发到 PyPI，打包方式见 README。
+# 这里声明 project 段只是为了给 GitHub / 静态分析工具提供元数据。
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]        # 中文注释行容易超长，不强制
+
+[tool.ruff.lint.per-file-ignores]
+# verify_patches.py 的导入顺序有语义：bolt_manager 必须最先导入以安装 gi 桩
+"tools/verify_patches.py" = ["I001"]
+
+[tool.ruff.format]
+quote-style = "double"

@@ -1,0 +1,185 @@
+diff --git a/hidapi/hidapi_impl.py b/hidapi/hidapi_impl.py
+--- a/hidapi/hidapi_impl.py
++++ b/hidapi/hidapi_impl.py
+@@ -13,6 +13,17 @@
+ ## You should have received a copy of the GNU General Public License along
+ ## with this program; if not, write to the Free Software Foundation, Inc.,
+ ## 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
++## ---------------------------------------------------------------------------
++## MODIFIED FILE - not the original Solaar source.
++## Project: BoltManager - Windows GUI for Logi Bolt receivers
++## Date:    2026-10-29
++## Base:    Solaar 1.1.20 (GPL-2.0-or-later, see LICENSE)
++## Change:  Bolt receiver (046D:C548) MI_02 exposes two HID collections: Col01 accepts only
++##          short HID++ reports (0x10) and Col02 only long reports (0x11), and Windows
++##          validates report id/length strictly. Added a virtual split handle that opens
++##          both collections, routes writes by report id, polls both on read, and rewrites
++##          long-register reads (0x83) as short reports (firmware quirk).
++## ---------------------------------------------------------------------------
+ """Generic Human Interface Device API.
+ 
+ This provides a python interface to libusb's hidapi library which,
+@@ -53,6 +64,56 @@
+ 
+ # Global handle to hidapi
+ _hidapi = None
++
++# debug: map device handles to the paths they were opened from
++_handle_paths = {}
++
++# ---------------------------------------------------------------------------
++# Windows Bolt receiver support:
++# The Logi Bolt receiver (046D:C548) exposes two HID top-level collections on
++# interface MI_02: Col01 accepts ONLY short HID++ reports (0x10, 7 bytes) and
++# Col02 accepts ONLY long HID++ reports (0x11, 20 bytes). Windows validates
++# report id + length strictly, so a single handle cannot send both. Solaar
++# expects one handle that speaks both. We therefore open both collections and
++# present a virtual handle that routes writes by report id and reads from both.
++# ---------------------------------------------------------------------------
++import itertools as _itertools
++
++_vh_counter = _itertools.count(10 ** 9)
++_virtual_handles = {}
++
++
++class _BoltSplitHandle:
++    def __init__(self, short_handle, long_handle):
++        self.short_handle = short_handle
++        self.long_handle = long_handle
++        self.token = next(_vh_counter)
++
++    def __int__(self):
++        return self.token
++
++    def __bool__(self):
++        return True
++
++
++def _lookup_vh(device_handle):
++    if isinstance(device_handle, _BoltSplitHandle):
++        return device_handle
++    return _virtual_handles.get(device_handle)
++
++
++def _resolve_bolt_path(device_path: bytes):
++    """Return (short_path, long_path) if this is a Bolt receiver MI_02 collection, else None."""
++    decoded = device_path.decode("utf-8", "ignore")
++    if "VID_046D&PID_C548&MI_02&Col" not in decoded:
++        return None
++    if "Col01" in decoded:
++        short_path = device_path
++        long_path = device_path.replace(b"Col01", b"Col02").replace(b"&0000#", b"&0001#")
++    else:
++        long_path = device_path
++        short_path = device_path.replace(b"Col02", b"Col01").replace(b"&0001#", b"&0000#")
++    return short_path, long_path
+ 
+ # hidapi binary names for various platforms
+ _library_paths = (
+@@ -427,9 +488,26 @@
+     if not isinstance(device_path, bytes):
+         device_path = device_path.encode()
+ 
++    bolt = _resolve_bolt_path(device_path)
++    if bolt is not None:
++        short_path, long_path = bolt
++        sh = _hidapi.hid_open_path(short_path)
++        lh = _hidapi.hid_open_path(long_path) if long_path != short_path else None
++        if sh is None or lh is None:
++            if sh:
++                _hidapi.hid_close(sh)
++            if lh:
++                _hidapi.hid_close(lh)
++            raise HIDError(_hidapi.hid_error(None))
++        vh = _BoltSplitHandle(sh, lh)
++        _virtual_handles[vh.token] = vh
++        _handle_paths[vh.token] = device_path
++        return vh
++
+     device_handle = _hidapi.hid_open_path(device_path)
+     if device_handle is None:
+         raise HIDError(_hidapi.hid_error(None))
++    _handle_paths[device_handle] = device_path
+     return device_handle
+ 
+ 
+@@ -439,6 +517,12 @@
+     :param device_handle: a device handle returned by open() or open_path().
+     """
+     assert device_handle
++    vh = _lookup_vh(device_handle)
++    if vh is not None:
++        _hidapi.hid_close(vh.long_handle)
++        _hidapi.hid_close(vh.short_handle)
++        _virtual_handles.pop(vh.token, None)
++        return
+     _hidapi.hid_close(device_handle)
+ 
+ 
+@@ -467,6 +551,20 @@
+     assert data
+     assert isinstance(data, bytes), (repr(data), type(data))
+ 
++    vh = _lookup_vh(device_handle)
++    if vh is not None:
++        if data[:1] == b"\x11" and data[2:3] == b"\x83":
++            # Bolt firmware quirk: long-register READS (0x83) are only accepted
++            # when carried in a SHORT report; the reply comes back as a long report.
++            sdata = bytes([0x10, data[1], data[2], data[3], data[4], data[5], data[6]])
++            bytes_written = _hidapi.hid_write(vh.short_handle, sdata, len(sdata))
++        else:
++            target = vh.long_handle if data[:1] == b"\x11" else vh.short_handle
++            bytes_written = _hidapi.hid_write(target, data, len(data))
++        if bytes_written < 0:
++            raise HIDError(_hidapi.hid_error(vh.long_handle if data[:1] == b"\x11" else vh.short_handle))
++        return bytes_written
++
+     bytes_written = _hidapi.hid_write(device_handle, data, len(data))
+     if bytes_written < 0:
+         raise HIDError(_hidapi.hid_error(device_handle))
+@@ -491,6 +589,25 @@
+     """
+     assert device_handle
+ 
++    vh = _lookup_vh(device_handle)
++    if vh is not None:
++        # poll both collections; short replies arrive on Col01, long on Col02
++        from time import monotonic as _mono
++        if timeout_ms is None or timeout_ms < 0:
++            deadline = None
++        else:
++            deadline = _mono() + timeout_ms / 1000.0
++        while True:
++            for hnd in (vh.long_handle, vh.short_handle):
++                buf = ctypes.create_string_buffer(bytes_count)
++                br = _hidapi.hid_read_timeout(hnd, buf, bytes_count, 25)
++                if br < 0:
++                    raise HIDError(_hidapi.hid_error(hnd))
++                if br > 0:
++                    return buf.raw[:br]
++            if deadline is not None and _mono() >= deadline:
++                return b""
++
+     data = ctypes.create_string_buffer(bytes_count)
+     if timeout_ms is None or timeout_ms < 0:
+         bytes_read = _hidapi.hid_read(device_handle, data, bytes_count)
+@@ -505,6 +622,9 @@
+ 
+ def _get_input_report(device_handle, report_id, size):
+     assert device_handle
++    vh = _lookup_vh(device_handle)
++    if vh is not None:
++        device_handle = vh.long_handle if report_id == 0x11 else vh.short_handle
+     data = ctypes.create_string_buffer(size)
+     data[0] = bytearray((report_id,))
+     size = _hidapi.hid_get_input_report(device_handle, data, size)
+@@ -515,6 +635,9 @@
+ 
+ def _readstring(device_handle, func, max_length=255):
+     assert device_handle
++    vh = _lookup_vh(device_handle)
++    if vh is not None:
++        device_handle = vh.short_handle
+     buf = ctypes.create_unicode_buffer(max_length)
+     ret = func(device_handle, buf, max_length)
+     if ret < 0:

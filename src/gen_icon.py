@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """纯 Python 生成应用图标 bolt.ico（多尺寸 PNG 内嵌 ICO，无第三方依赖）。"""
 import struct
 import zlib

@@ -1,0 +1,29 @@
+diff --git a/logitech_receiver/base.py b/logitech_receiver/base.py
+--- a/logitech_receiver/base.py
++++ b/logitech_receiver/base.py
+@@ -13,6 +13,14 @@
+ ## You should have received a copy of the GNU General Public License along
+ ## with this program; if not, write to the Free Software Foundation, Inc.,
+ ## 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
++## ---------------------------------------------------------------------------
++## MODIFIED FILE - not the original Solaar source.
++## Project: BoltManager - Windows GUI for Logi Bolt receivers
++## Date:    2026-10-29
++## Base:    Solaar 1.1.20 (GPL-2.0-or-later, see LICENSE)
++## Change:  Long-register reads (0x83) are now framed as 20-byte long HID++ messages, like 0x82.
++##          Without this, Bolt register reads went out as short frames and were rejected.
++## ---------------------------------------------------------------------------
+ 
+ """Base low-level functions as API for upper layers."""
+ 
+@@ -450,7 +458,9 @@
+     assert data is not None
+     assert isinstance(data, bytes), (repr(data), type(data))
+ 
+-    if long_message or len(data) > SHORT_MESSAGE_SIZE - 2 or data[:1] == b"\x82":
++    # 0x82 = long register write, 0x83 = long register read (e.g. Bolt receiver
++    # registers 0x2xx/0x2FB). Both must be sent as long HID++ messages.
++    if long_message or len(data) > SHORT_MESSAGE_SIZE - 2 or data[:1] in (b"\x82", b"\x83"):
+         wdata = struct.pack("!BB18s", HIDPP_LONG_MESSAGE_ID, devnumber, data)
+     else:
+         wdata = struct.pack("!BB5s", HIDPP_SHORT_MESSAGE_ID, devnumber, data)

@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: 补丁与代码检查
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 安装运行时依赖
+        run: |
+          pip install --no-deps solaar==1.1.20
+          pip install -r requirements.txt
+
+      - name: 应用补丁
+        run: |
+          python tools/apply_patches.py --check
+          python tools/apply_patches.py
+
+      - name: 无硬件自检
+        run: python tools/verify_patches.py
+
+      - name: 代码检查
+        run: |
+          pip install ruff
+          ruff check src tools
+
+  build:
+    name: 打包 exe
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 安装依赖
+        run: |
+          pip install --no-deps solaar==1.1.20
+          pip install -r requirements-dev.txt
+
+      - name: 下载官方 hidapi.dll
+        run: python tools/fetch_hidapi.py
+
+      - name: 应用补丁
+        run: python tools/apply_patches.py
+
+      - name: 打包
+        run: python -m PyInstaller --noconfirm --clean --distpath dist --workpath build src/BoltManager.spec
+
+      - name: 冒烟测试
+        run: dist\BoltManager\BoltManager.exe --version
+
+      - name: 收集发布物（附带许可证与补丁，满足 GPL 源码可得要求）
+        shell: pwsh
+        run: |
+          Copy-Item LICENSE dist\BoltManager\
+          Copy-Item THIRD-PARTY-NOTICES.md dist\BoltManager\
+          Copy-Item patches -Destination dist\BoltManager\ -Recurse
+          Compress-Archive -Path dist\BoltManager -DestinationPath "BoltManager-$($env:GITHUB_REF_NAME)-win64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BoltManager-win64
+          path: BoltManager-*-win64.zip
+
+      - name: 发布到 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: BoltManager-*-win64.zip

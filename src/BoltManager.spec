@@ -21,18 +21,28 @@ PROJECT_ROOT = os.path.dirname(SRC_DIR)
 
 
 def _find_hidapi_dll():
-    """按常见位置查找 hidapi.dll，返回绝对路径。"""
+    """按常见位置查找 hidapi.dll，返回绝对路径。
+
+    优先级：环境变量 > tools/fetch_hidapi.py 下载的官方 DLL > Python 安装目录。
+    """
     import sys
 
-    candidates = [
-        os.path.join(sys.base_prefix, "hidapi.dll"),                               # Windows 官方 Python
-        os.path.join(sys.base_prefix, "Library", "bin", "hidapi.dll"),             # conda
+    candidates = []
+    env = os.environ.get("HIDAPI_DLL")
+    if env:
+        candidates.append(env)
+    candidates += [
+        os.path.join(PROJECT_ROOT, "build", "hidapi", "hidapi.dll"),          # fetch_hidapi.py 产物
+        os.path.join(sys.base_prefix, "hidapi.dll"),                          # 手工放进 Python 目录（旧做法）
+        os.path.join(sys.base_prefix, "Library", "bin", "hidapi.dll"),        # conda
         os.path.join(sys.base_prefix, "Lib", "site-packages", "hidapi", "hidapi.dll"),
     ]
     for path in candidates:
-        if os.path.isfile(path):
+        if path and os.path.isfile(path):
             return path
-    raise SystemExit("未找到 hidapi.dll，请先 pip install hidapi；已尝试：\n  " + "\n  ".join(candidates))
+    raise SystemExit(
+        "未找到 hidapi.dll。请先执行：python tools/fetch_hidapi.py\n已尝试：\n  " + "\n  ".join(candidates)
+    )
 
 
 HIDAPI_DLL = _find_hidapi_dll()
