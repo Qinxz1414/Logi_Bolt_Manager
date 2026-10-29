@@ -24,3 +24,6 @@ desktop.ini
 
 # 助手内部状态
 .workbuddy/
+
+# 发布产物（本地构建，上传到 Release 附件）
+release/

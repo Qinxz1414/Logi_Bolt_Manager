@@ -200,8 +200,7 @@ bolt_core.unpair_device(3)           # 解除槽位 3
 
 | 补丁 | 改动量 | 作用 |
 | --- | --- | --- |
-| `hidapi/hidapi_impl.py.patch` | +109 / −0 | Bolt 接收器双集合虚拟句柄；`0x83` 长寄存器读改走短报文 |
-| `logitech_receiver/base.py.patch` | +11 / −1 | `0x83` 长寄存器读也按 20 字节长报文封装 |
+| `hidapi/hidapi_impl.py.patch` | +148 / −0 | Bolt 接收器双集合虚拟句柄；`0x83` 长寄存器读改走短报文；`close()` 幂等防双重释放堆损坏 |
 | `logitech_receiver/receiver.py.patch` | +9 / −1 | `extract_serial()` 容错 `None` 回复 |
 | `logitech_receiver/desktop_notifications.py.patch` | +9 / −1 | 通知探测多捕获 `ImportError`（无 GTK 环境） |
 

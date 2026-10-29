@@ -7,8 +7,7 @@
 
 | 补丁 | 改动 | 作用 |
 | --- | --- | --- |
-| `hidapi/hidapi_impl.py.patch` | +109 / −0，8 hunks | Bolt 接收器双集合虚拟句柄；`0x83` 长寄存器读改走短报文 |
-| `logitech_receiver/base.py.patch` | +11 / −1 | `0x83` 也按长报文封装 |
+| `hidapi/hidapi_impl.py.patch` | +148 / −0，8 hunks | Bolt 接收器双集合虚拟句柄；`0x83` 长寄存器读改走短报文；`close()` 幂等防双重释放堆损坏 |
 | `logitech_receiver/receiver.py.patch` | +9 / −1 | `extract_serial()` 容错 `None` |
 | `logitech_receiver/desktop_notifications.py.patch` | +9 / −1 | 通知探测多捕获 `ImportError` |
 

@@ -19,7 +19,7 @@ diff --git a/hidapi/hidapi_impl.py b/hidapi/hidapi_impl.py
  """Generic Human Interface Device API.
  
  This provides a python interface to libusb's hidapi library which,
-@@ -53,6 +64,56 @@
+@@ -53,6 +64,60 @@
  
  # Global handle to hidapi
  _hidapi = None
@@ -40,6 +40,10 @@ diff --git a/hidapi/hidapi_impl.py b/hidapi/hidapi_impl.py
 +
 +_vh_counter = _itertools.count(10 ** 9)
 +_virtual_handles = {}
++
++# 已关闭的真实句柄值 / 虚拟句柄 token，用于让 close() 幂等（防 solaar 失败路径双重释放）
++_closed_handles = set()
++_closed_tokens = set()
 +
 +
 +class _BoltSplitHandle:
@@ -76,7 +80,7 @@ diff --git a/hidapi/hidapi_impl.py b/hidapi/hidapi_impl.py
  
  # hidapi binary names for various platforms
  _library_paths = (
-@@ -427,9 +488,26 @@
+@@ -427,9 +492,32 @@
      if not isinstance(device_path, bytes):
          device_path = device_path.encode()
  
@@ -91,7 +95,12 @@ diff --git a/hidapi/hidapi_impl.py b/hidapi/hidapi_impl.py
 +            if lh:
 +                _hidapi.hid_close(lh)
 +            raise HIDError(_hidapi.hid_error(None))
++        # 新句柄可能复用之前已关闭的句柄值，从已关闭集合里移除
++        _closed_handles.discard(int(sh))
++        if lh is not None:
++            _closed_handles.discard(int(lh))
 +        vh = _BoltSplitHandle(sh, lh)
++        _closed_tokens.discard(vh.token)
 +        _virtual_handles[vh.token] = vh
 +        _handle_paths[vh.token] = device_path
 +        return vh
@@ -99,24 +108,43 @@ diff --git a/hidapi/hidapi_impl.py b/hidapi/hidapi_impl.py
      device_handle = _hidapi.hid_open_path(device_path)
      if device_handle is None:
          raise HIDError(_hidapi.hid_error(None))
++    _closed_handles.discard(int(device_handle))
 +    _handle_paths[device_handle] = device_path
      return device_handle
  
  
-@@ -439,6 +517,12 @@
+@@ -437,9 +525,30 @@
+     """Close a HID device.
+ 
      :param device_handle: a device handle returned by open() or open_path().
++
++    Idempotent: solaar's failure paths may close the same handle twice
++    (base.write closes on error, then Receiver.__del__ closes again), which
++    double-freed the OS handle and crashed with heap corruption (0xC0000374).
++    Track closed handles/tokens and skip repeats.
      """
      assert device_handle
++    if int(device_handle) in _closed_tokens:
++        return
 +    vh = _lookup_vh(device_handle)
 +    if vh is not None:
 +        _hidapi.hid_close(vh.long_handle)
-+        _hidapi.hid_close(vh.short_handle)
++        _closed_handles.add(int(vh.long_handle))
++        if vh.short_handle is not None:
++            _hidapi.hid_close(vh.short_handle)
++            _closed_handles.add(int(vh.short_handle))
++        _closed_tokens.add(vh.token)
 +        _virtual_handles.pop(vh.token, None)
 +        return
++    dh = int(device_handle)
++    if dh in _closed_handles:
++        return
      _hidapi.hid_close(device_handle)
++    _closed_handles.add(dh)
  
  
-@@ -467,6 +551,20 @@
+ def write(device_handle: int, data: bytes) -> int:
+@@ -467,6 +576,20 @@
      assert data
      assert isinstance(data, bytes), (repr(data), type(data))
  
@@ -137,7 +165,7 @@ diff --git a/hidapi/hidapi_impl.py b/hidapi/hidapi_impl.py
      bytes_written = _hidapi.hid_write(device_handle, data, len(data))
      if bytes_written < 0:
          raise HIDError(_hidapi.hid_error(device_handle))
-@@ -491,6 +589,25 @@
+@@ -491,6 +614,25 @@
      """
      assert device_handle
  
@@ -163,7 +191,7 @@ diff --git a/hidapi/hidapi_impl.py b/hidapi/hidapi_impl.py
      data = ctypes.create_string_buffer(bytes_count)
      if timeout_ms is None or timeout_ms < 0:
          bytes_read = _hidapi.hid_read(device_handle, data, bytes_count)
-@@ -505,6 +622,9 @@
+@@ -505,6 +647,9 @@
  
  def _get_input_report(device_handle, report_id, size):
      assert device_handle
@@ -173,7 +201,7 @@ diff --git a/hidapi/hidapi_impl.py b/hidapi/hidapi_impl.py
      data = ctypes.create_string_buffer(size)
      data[0] = bytearray((report_id,))
      size = _hidapi.hid_get_input_report(device_handle, data, size)
-@@ -515,6 +635,9 @@
+@@ -515,6 +660,9 @@
  
  def _readstring(device_handle, func, max_length=255):
      assert device_handle

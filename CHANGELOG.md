@@ -3,6 +3,23 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.2.2] - 2026-10-30
+
+### 修复
+
+- **插着优联接收器时程序闪退**（堆损坏 `0xC0000374`）：Solaar 失败路径双重释放 HID 句柄——
+  `base.write()` 写失败先 close 一次并抛 `NoReceiver`，半初始化的 `Receiver` 被 GC 时
+  `__del__` 再 close 一次，C 层二次释放导致进程崩溃。现在 `close()` 幂等，重复关闭直接跳过。
+  接收器被 Logi Options+ 等软件占用而写入失败时必现，此前插着优联打开程序就会闪退
+- **回退 1.2.0 引入的 `0x83` 长帧封装**：Bolt 路径里 hidapi 层的固件特例已把 `0x83` 读
+  重写为短帧，该改动对 Bolt 冗余；而优联只接受短帧的 `0x83` 读，全局改长帧会让优联
+  寄存器读全部超时。`logitech_receiver/base.py` 现已与上游完全一致，补丁从 4 个减为 3 个
+
+### 变更
+
+- `tools/verify_patches.py` 自检项同步更新（幂等 close 指纹）
+- 新增 `tests/test_hidapi_close.py` 回归测试（假 `_hidapi` 验证单次/虚拟/句柄复用三种关闭路径）
+
 ## [1.2.1] - 2026-10-30
 
 ### 修复
