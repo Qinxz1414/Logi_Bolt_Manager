@@ -80,3 +80,21 @@ def test_reopened_handle_value_can_be_closed_again(fake_hidapi):
     impl.close(handle)
 
     assert fake_hidapi.closed == [handle, handle]
+
+
+def test_split_path_only_matches_mi02():
+    """拆分只认 MI_02（HID++ 接口）；MI_01 键鼠模拟接口（含 Col03）不拆分。"""
+    resolve = impl._resolve_bolt_path
+    mi02_col02 = b"\\\\?\\HID#VID_046D&PID_C52B&MI_02&Col02#a&296e518a&0&0001#{4d1e55b2}"
+    mi01_col03 = b"\\\\?\\HID#VID_046D&PID_C52B&MI_01&Col03#a&59713c8&0&0002#{4d1e55b2}"
+    mi01_col01 = b"\\\\?\\HID#VID_046D&PID_C52B&MI_01&Col01#a&59713c8&0&0000#{4d1e55b2}"
+    other_pid = b"\\\\?\\HID#VID_046D&PID_C921&MI_02&Col01#a&59713c8&0&0000#{4d1e55b2}"
+
+    assert resolve(mi02_col02) is not None
+    assert resolve(mi01_col03) is None
+    assert resolve(mi01_col01) is None
+    assert resolve(other_pid) is None
+    # MI_02 Col02 的配对 Col01 路径替换正确
+    short_path, long_path = resolve(mi02_col02)
+    assert b"Col01" in short_path and b"&0000#" in short_path
+    assert long_path == mi02_col02

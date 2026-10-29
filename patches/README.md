@@ -7,7 +7,7 @@
 
 | 补丁 | 改动 | 作用 |
 | --- | --- | --- |
-| `hidapi/hidapi_impl.py.patch` | +148 / −0，8 hunks | Bolt 接收器双集合虚拟句柄；`0x83` 长寄存器读改走短报文；`close()` 幂等防双重释放堆损坏 |
+| `hidapi/hidapi_impl.py.patch` | +169 / −0，8 hunks | 双集合虚拟句柄（Bolt C548 / 优联 C52B / C532 / C539 的 MI_02，Col01 短帧 + Col02 长帧，单集合自动回退）；`0x83` 长寄存器读改走短报文；`close()` 幂等防双重释放堆损坏 |
 | `logitech_receiver/receiver.py.patch` | +9 / −1 | `extract_serial()` 容错 `None` |
 | `logitech_receiver/desktop_notifications.py.patch` | +9 / −1 | 通知探测多捕获 `ImportError` |
 

@@ -19,7 +19,7 @@ diff --git a/hidapi/hidapi_impl.py b/hidapi/hidapi_impl.py
  """Generic Human Interface Device API.
  
  This provides a python interface to libusb's hidapi library which,
-@@ -53,6 +64,60 @@
+@@ -53,6 +64,70 @@
  
  # Global handle to hidapi
  _hidapi = None
@@ -66,9 +66,19 @@ diff --git a/hidapi/hidapi_impl.py b/hidapi/hidapi_impl.py
 +
 +
 +def _resolve_bolt_path(device_path: bytes):
-+    """Return (short_path, long_path) if this is a Bolt receiver MI_02 collection, else None."""
++    """Return (short_path, long_path) if this is a Logitech receiver collection that
++    comes in a short-only (Col01) / long-only (Col02) pair, else None.
++
++    Applies to Bolt (C548) AND Unifying/Lightspeed receivers (C52B/C532/C539):
++    their MI_ interface exposes two HID top-level collections, Col01 accepts only
++    short HID++ reports (0x10) and Col02 only long ones (0x11), and Windows
++    validates report id + length strictly. Solaar expects one handle that speaks
++    both, so we open both collections and route writes by report id.
++    """
 +    decoded = device_path.decode("utf-8", "ignore")
-+    if "VID_046D&PID_C548&MI_02&Col" not in decoded:
++    if "VID_046D" not in decoded or "&MI_02&Col0" not in decoded:
++        return None
++    if not any(f"PID_{pid}&" in decoded for pid in ("C548", "C52B", "C532", "C539")):
 +        return None
 +    if "Col01" in decoded:
 +        short_path = device_path
@@ -80,7 +90,7 @@ diff --git a/hidapi/hidapi_impl.py b/hidapi/hidapi_impl.py
  
  # hidapi binary names for various platforms
  _library_paths = (
-@@ -427,9 +492,32 @@
+@@ -427,9 +502,34 @@
      if not isinstance(device_path, bytes):
          device_path = device_path.encode()
  
@@ -89,21 +99,23 @@ diff --git a/hidapi/hidapi_impl.py b/hidapi/hidapi_impl.py
 +        short_path, long_path = bolt
 +        sh = _hidapi.hid_open_path(short_path)
 +        lh = _hidapi.hid_open_path(long_path) if long_path != short_path else None
-+        if sh is None or lh is None:
-+            if sh:
-+                _hidapi.hid_close(sh)
-+            if lh:
-+                _hidapi.hid_close(lh)
-+            raise HIDError(_hidapi.hid_error(None))
-+        # 新句柄可能复用之前已关闭的句柄值，从已关闭集合里移除
-+        _closed_handles.discard(int(sh))
-+        if lh is not None:
-+            _closed_handles.discard(int(lh))
-+        vh = _BoltSplitHandle(sh, lh)
-+        _closed_tokens.discard(vh.token)
-+        _virtual_handles[vh.token] = vh
-+        _handle_paths[vh.token] = device_path
-+        return vh
++        if sh is not None and (lh is not None or long_path == short_path):
++            # 新句柄可能复用之前已关闭的句柄值，从已关闭集合里移除
++            _closed_handles.discard(int(sh))
++            if lh is not None:
++                _closed_handles.discard(int(lh))
++            vh = _BoltSplitHandle(sh, lh)
++            _closed_tokens.discard(vh.token)
++            _virtual_handles[vh.token] = vh
++            _handle_paths[vh.token] = device_path
++            return vh
++        # 双集合不齐（单集合固件 / 权限问题）→ 回退为单句柄打开，行为同上游
++        if sh:
++            _hidapi.hid_close(sh)
++            _closed_handles.add(int(sh))
++        if lh:
++            _hidapi.hid_close(lh)
++            _closed_handles.add(int(lh))
 +
      device_handle = _hidapi.hid_open_path(device_path)
      if device_handle is None:
@@ -113,7 +125,7 @@ diff --git a/hidapi/hidapi_impl.py b/hidapi/hidapi_impl.py
      return device_handle
  
  
-@@ -437,9 +525,30 @@
+@@ -437,9 +537,31 @@
      """Close a HID device.
  
      :param device_handle: a device handle returned by open() or open_path().
@@ -128,8 +140,9 @@ diff --git a/hidapi/hidapi_impl.py b/hidapi/hidapi_impl.py
 +        return
 +    vh = _lookup_vh(device_handle)
 +    if vh is not None:
-+        _hidapi.hid_close(vh.long_handle)
-+        _closed_handles.add(int(vh.long_handle))
++        if vh.long_handle is not None:
++            _hidapi.hid_close(vh.long_handle)
++            _closed_handles.add(int(vh.long_handle))
 +        if vh.short_handle is not None:
 +            _hidapi.hid_close(vh.short_handle)
 +            _closed_handles.add(int(vh.short_handle))
@@ -144,7 +157,7 @@ diff --git a/hidapi/hidapi_impl.py b/hidapi/hidapi_impl.py
  
  
  def write(device_handle: int, data: bytes) -> int:
-@@ -467,6 +576,20 @@
+@@ -467,6 +589,20 @@
      assert data
      assert isinstance(data, bytes), (repr(data), type(data))
  
@@ -165,7 +178,7 @@ diff --git a/hidapi/hidapi_impl.py b/hidapi/hidapi_impl.py
      bytes_written = _hidapi.hid_write(device_handle, data, len(data))
      if bytes_written < 0:
          raise HIDError(_hidapi.hid_error(device_handle))
-@@ -491,6 +614,25 @@
+@@ -491,6 +627,27 @@
      """
      assert device_handle
  
@@ -179,6 +192,8 @@ diff --git a/hidapi/hidapi_impl.py b/hidapi/hidapi_impl.py
 +            deadline = _mono() + timeout_ms / 1000.0
 +        while True:
 +            for hnd in (vh.long_handle, vh.short_handle):
++                if hnd is None:
++                    continue
 +                buf = ctypes.create_string_buffer(bytes_count)
 +                br = _hidapi.hid_read_timeout(hnd, buf, bytes_count, 25)
 +                if br < 0:
@@ -191,23 +206,29 @@ diff --git a/hidapi/hidapi_impl.py b/hidapi/hidapi_impl.py
      data = ctypes.create_string_buffer(bytes_count)
      if timeout_ms is None or timeout_ms < 0:
          bytes_read = _hidapi.hid_read(device_handle, data, bytes_count)
-@@ -505,6 +647,9 @@
+@@ -505,6 +662,13 @@
  
  def _get_input_report(device_handle, report_id, size):
      assert device_handle
 +    vh = _lookup_vh(device_handle)
 +    if vh is not None:
 +        device_handle = vh.long_handle if report_id == 0x11 else vh.short_handle
++        if device_handle is None:
++            device_handle = vh.short_handle if report_id == 0x11 else vh.long_handle
++        if device_handle is None:
++            return b""
      data = ctypes.create_string_buffer(size)
      data[0] = bytearray((report_id,))
      size = _hidapi.hid_get_input_report(device_handle, data, size)
-@@ -515,6 +660,9 @@
+@@ -515,6 +679,11 @@
  
  def _readstring(device_handle, func, max_length=255):
      assert device_handle
 +    vh = _lookup_vh(device_handle)
 +    if vh is not None:
 +        device_handle = vh.short_handle
++        if device_handle is None:
++            device_handle = vh.long_handle
      buf = ctypes.create_unicode_buffer(max_length)
      ret = func(device_handle, buf, max_length)
      if ret < 0:

@@ -3,6 +3,23 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.3.1] - 2026-10-30
+
+### 修复
+
+- **优联接收器读取失败**（Options+ 退出后仍报"初始化失败"）：0x83 寄存器读是短帧，
+  但优联打开的句柄是 Col02（只收长帧），Windows 校验拒绝。虚拟双句柄机制从 Bolt
+  推广到优联/Lightspeed（C52B / C532 / C539）：同时打开 MI_02 的 Col01（短帧）与
+  Col02（长帧），按报文 ID 路由读写；单集合打不开时自动回退单句柄
+- 拆分匹配收紧到 `MI_02`：优联的 MI_01 键鼠模拟接口有 Col01~Col03 三个集合，
+  之前会误拆出 `long_handle=None` 的坏句柄并触发 C 层访问违例
+- `close()` / `read()` / `_get_input_report()` / `_readstring()` 对子句柄判空
+
+### 测试
+
+- 实测优联：Unifying Receiver + M720 Triathlon（槽位 1，在线）读取正常
+- 新增拆分路径匹配测试（MI_02 命中 / MI_01 与非接收器 PID 不命中），29 例全过
+
 ## [1.3.0] - 2026-10-30
 
 ### 新增
