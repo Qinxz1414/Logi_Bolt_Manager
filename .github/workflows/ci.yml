@@ -30,10 +30,15 @@ jobs:
       - name: 无硬件自检
         run: python tools/verify_patches.py
 
+      - name: 单元测试
+        run: |
+          pip install pytest
+          python -m pytest tests -q
+
       - name: 代码检查
         run: |
           pip install ruff
-          ruff check src tools
+          ruff check src tools tests
 
   build:
     name: 打包 exe

@@ -49,7 +49,12 @@ HIDAPI_DLL = _find_hidapi_dll()
 
 binaries = [(HIDAPI_DLL, ".")]
 datas = collect_data_files("solaar")
+# 窗口图标要在运行时用到，作为数据文件一起打进去（EXE 的 icon= 只影响 exe 文件本身）
+ICON = os.path.join(SRC_DIR, "bolt.ico")
+if os.path.isfile(ICON):
+    datas.append((ICON, "."))
 hiddenimports = [
+    "bolt_core",
     "hidapi.hidapi_impl",
     "logitech_receiver.base",
     "logitech_receiver.receiver",

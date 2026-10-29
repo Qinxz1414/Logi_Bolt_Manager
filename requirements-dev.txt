@@ -1,4 +1,5 @@
 # 开发/构建依赖（先按 requirements.txt 的两步装好运行时）
 -r requirements.txt
 pyinstaller>=6.10
+pytest>=8.0
 ruff>=0.6

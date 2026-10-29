@@ -3,6 +3,40 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.1.0] - 2026-10-29
+
+软件本身的第一次大改进：更完整的信息展示、可脚本化的写操作、更顺手的界面。
+
+### 新增
+
+- **接收器信息条**（GUI 顶部）：接收器名称、序列号、已配对 x/上限、剩余可配对数、USB 接口号
+- **设备详情面板**（GUI 右侧）：选中设备的类型 / 产品 ID (WPID) / 序列号 / 槽位 / 连接状态，
+  首次刷新自动选中第一行
+- **复制 / 导出 CSV**：一键把设备清单以 TSV 复制到剪贴板，或导出为 Excel 友好的 CSV（utf-8-sig）
+- **自动刷新**：5/15/30/60 秒定时重读接收器，开关状态持久化
+- **高 DPI 感知**：高分屏下界面不再是模糊的拉伸位图
+- **窗口尺寸/位置记忆**：保存在 `%APPDATA%\BoltManager\settings.json`，换分辨率/拔掉副屏时自动退回安全值
+- **GUI 单实例保护**：第二个实例会弹窗提示退出（两个进程同时读写接收器会互相打断）
+- CLI 新命令：
+  - `--info`：接收器 + 设备完整信息
+  - `--unpair SLOT [-y]`：脚本化解除配对（非交互环境必须显式 `--yes`）
+  - `--watch [SECONDS]`：持续监控设备增减与上下线，只在变化时输出（Ctrl+C 退出）
+- `--json` 现在覆盖 `--list` / `--info` / `--unpair`，错误也输出结构化 JSON
+- 单元测试（`tests/`，pytest，不需要插硬件）：数据层格式化、设置读写、解除配对的三条路径
+
+### 变更
+
+- 代码拆分为 `src/bolt_core.py`（数据层，无 GUI 依赖）+ `src/bolt_manager.py`（CLI + GUI）
+- 错误统一为 `BoltError` 家族，附可操作的建议（接收器被占用 / 未插入 / 槽位为空各有不同提示）
+- GUI 打包配置把 `bolt.ico` 一并打进运行时资源，窗口左上角有图标
+
+### 修复
+
+- 解除配对改走 Solaar 公开方法 `Receiver.force_unpair_slot()`，不再依赖 `_unpair_device()`
+  私有方法（旧版本仍会自动回退）——原 1.0.0 已知问题之一消除
+- 状态栏与工具栏重叠的布局错误
+- 序列号过长时在信息条中截断显示，完整值见详情面板
+
 ## [1.0.0] - 2026-10-29
 
 首个开源版本。
@@ -32,16 +66,8 @@
 - **序列号读取中断**：个别固件不响应 `BOLT_UNIQUE_ID`，`extract_serial()` 抛 `AttributeError`。
 - **无 GTK 环境导入失败**：通知模块只捕获 `ValueError`，Windows 上抛的是 `ImportError`。
 
-### 变更
-
-- 目录结构整理为 `src/`、`patches/`、`tools/`、`docs/`，构建脚本不再硬编码 Python 安装路径
-- 代码拆出数据层 / CLI / GUI，新增 `__version__`，CLI 改用 `argparse`
-- 设备名与序列号去除固件返回的定长填充空格
-- 通过 `ruff check`；补丁统一 LF 换行
-
 ### 已知问题
 
-- 解除配对依赖 `Receiver._unpair_device()` 私有方法
 - 未做代码签名，Windows SmartScreen 可能拦截
 - 仅支持 Windows
 - `pip install solaar` 在 Windows 上会因 PyGObject 构建失败，

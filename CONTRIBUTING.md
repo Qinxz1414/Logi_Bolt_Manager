@@ -28,14 +28,18 @@ python tools\apply_patches.py          :: 必须有补丁，否则读不到 Bolt
 python tools\fetch_hidapi.py           :: 下载 hidapi.dll（源码运行也需要）
 python src\bolt_manager.py --list      :: 冒烟测试
 python tools\verify_patches.py         :: 无硬件自检
-python -m ruff check src tools         :: 提交前必过
+python -m pytest tests -q              :: 单元测试（不需要插接收器）
+python -m ruff check src tools tests   :: 提交前必过
 ```
 
 ## 改代码的约定
 
 - Python 3.10+，`from __future__ import annotations` 已在用，类型标注尽量补全。
 - 行宽 120，`ruff` 配置见 `pyproject.toml`，提交前跑 `ruff check`（CI 也会跑）。
+- **数据层（`bolt_core.py`）不许 import tkinter**：它要能被脚本和测试直接复用。
 - GUI 里所有可能阻塞的操作（读 HID）必须走 `run_bg()` 后台线程，结果通过队列回主线程。
+- 新增可测逻辑请配 `tests/` 下的用例：用 `ReceiverSession(receiver=FakeReceiver())` 注入替身，
+  不要在测试里连真实硬件。
 - 注释用中文，写"为什么"而不是"做了什么"——踩过的坑请写进注释或 `docs/技术说明.md`。
 
 ## 改补丁的流程
