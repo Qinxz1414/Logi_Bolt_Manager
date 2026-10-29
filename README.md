@@ -5,13 +5,15 @@
 ![python](https://img.shields.io/badge/python-3.10%2B-3776ab)
 ![solaar](https://img.shields.io/badge/solaar-1.1.20-informational)
 
-**Windows 上的罗技 Logi Bolt 接收器小工具**：读取接收器里已配对的设备清单，把不用的设备从接收器里清掉。
-底层复用 [Solaar](https://github.com/pwr-Solaar/Solaar) 的 HID++ 协议实现，并为 Windows 的 HID 传输层打了补丁。
+**Windows 上的罗技接收器小工具**：读取接收器里已配对的设备清单、解除配对、配对新设备。
+支持 Bolt / 优联 Unifying / Lightspeed 接收器（Nano 只读），底层复用
+[Solaar](https://github.com/pwr-Solaar/Solaar) 的 HID++ 协议实现，并为 Windows 的 HID 传输层打了补丁。
 
-> **English**: A small Windows GUI/CLI to list and unpair devices on a Logitech **Logi Bolt** receiver
-> (`046D:C548`). Solaar 1.1.20 already speaks the Bolt protocol, but its HID layer assumes one handle can
-> send both short and long HID++ reports — which Windows forbids for this receiver. This project ships the
-> minimal fix (`patches/`, 4 files, +138/−3 lines) plus a tkinter front-end.
+> **English**: A small Windows GUI/CLI to list, unpair and pair devices on Logitech receivers
+> (Bolt `046D:C548`, Unifying `C52B`/`C532`, Lightspeed `C539`; Nano is read-only). Solaar 1.1.20 already
+> speaks the protocols, but its HID layer assumes one handle can send both short and long HID++ reports —
+> which Windows forbids for the Bolt receiver. This project ships the minimal fix
+> (`patches/`, 4 files, +138/−3 lines) plus a tkinter front-end.
 
 ![界面截图](docs/screenshot.png)
 
@@ -29,12 +31,14 @@ Solaar 能干这些事，但它官方只支持 Linux；在 Windows 上直接装�
 
 ## 功能
 
+- 支持 4 类接收器：**Bolt**、**优联 Unifying**、**Lightspeed**（列表/解配对/配对）、**Nano**（列表/替换式配对，协议不允许解配对）
 - 列出接收器上所有配对设备：槽位、名称、类型（键盘/鼠标…）、序列号、产品 ID (WPID)、在线状态
-- 解除指定设备的配对（写 Bolt 配对寄存器，不动设备本身，之后可重新配对）
-- 显示接收器信息：序列号、已配对数量/上限、剩余可配对数
+- 解除指定设备的配对（写配对寄存器，不动设备本身，之后可重新配对）
+- **配对新设备**：Bolt 走"发现 → 认证（passkey）"流程，Unifying/Nano 走开锁流程（GUI 向导或 `--pair`）
+- 显示接收器信息：型号、序列号、已配对数量/上限、剩余可配对数
 - 检测 Logi Options+ 等官方软件是否在运行（它们可能独占接收器）
 - GUI：设备详情面板、复制到剪贴板、导出 CSV、自动刷新、高 DPI、窗口位置记忆、单实例保护
-- 命令行模式：`--list` / `--info` / `--unpair` / `--watch`，全程支持 `--json`
+- 命令行模式：`--list` / `--info` / `--unpair` / `--pair` / `--watch`，全程支持 `--json`
 - 打包成单目录 exe，目标机器不需要装 Python
 
 ## 快速开始
@@ -73,11 +77,14 @@ python src\bolt_manager.py             :: 打开图形界面
 | --- | --- |
 | 刷新 | 重新读取接收器（读 HID 会阻塞，已放到后台线程） |
 | 解除所选设备配对 | 选中行后点击，或双击该行 / 按 Delete；有二次确认 |
+| 添加设备… | 打开配对向导：Bolt 长按设备配对键 → 认证（passkey）→ 完成；Unifying/Nano 开锁后开设备即可 |
 | 复制 | 把设备清单以 TSV 复制到剪贴板，可直接粘进 Excel |
 | 导出 CSV | 导出为 utf-8-sig 编码的 CSV，Excel 双击打开不乱码 |
 | 自动刷新 | 关闭 / 5 / 15 / 30 / 60 秒定时重读，检测设备增减 |
 | 设备详情面板 | 右侧显示选中设备的类型、产品 ID、序列号、连接状态 |
 | 状态栏 | 设备数量、最后刷新时间、错误信息、Options+ 占用警告 |
+
+按钮会按接收器能力自动禁用：Nano 接收器协议不允许解配对，对应按钮置灰。
 
 窗口大小/位置和自动刷新设置保存在 `%APPDATA%\BoltManager\settings.json`。
 同一时刻只允许运行一个 GUI 实例（第二个实例会弹窗提示），避免两个进程抢接收器。
@@ -89,6 +96,8 @@ python src\bolt_manager.py --list              :: 人类可读
 python src\bolt_manager.py --info              :: 接收器信息 + 设备详情
 python src\bolt_manager.py --list --json       :: 机器可读，便于脚本消费
 python src\bolt_manager.py --unpair 3 --yes    :: 解除槽位 3（非交互必须 --yes）
+python src\bolt_manager.py --pair              :: 配对新设备，按提示在设备上操作
+python src\bolt_manager.py --pair --timeout 60 :: 给配对更多时间
 python src\bolt_manager.py --watch 2           :: 每 2 秒轮询，只在变化时输出
 python src\bolt_manager.py --version
 python src\bolt_manager.py --list --debug      :: 打印 solaar/hidapi 调试日志
@@ -216,13 +225,14 @@ python tools\apply_patches.py --revert    :: 逐字节还原成上游原样
 
 ## 已知限制
 
-- 只做"列设备 + 解配对"；**配对新设备、DPI、按键重映射请用官方 Options+**。
-  配对需要接收器进入发现模式并等待设备端的 DJ_PAIRING 通知，没有常驻监听线程时做不完整，
-  所以这里没有实现"半成品配对按钮"。
+- **Nano 接收器不能解除配对**：这是接收器协议的限制（`may_unpair=False`），只能用"配对替换"的方式换设备；界面上对应按钮会自动置灰。
+- **Lightspeed / Unifying 的配对路径未经实机验证**：代码与 Bolt 走同一套 Solaar 协议实现，但开发时手头只有 Bolt 接收器。遇到问题请开 issue 并附 `--list --debug` 输出。
+- **"调整槽位"没有直接命令**：槽位由接收器在配对时分配，协议不支持移动。想换槽位只能解配对后重新配对。
+- DPI、按键重映射等设备级设置**请用官方 Options+**，本项目只管接收器层面。
 - 电池、固件版本读不到：这些要走 HID++ 2.0 的设备级通道，在 Bolt/Windows 下通常不响应
   （`protocol` 报 0）。本项目只展示接收器寄存器里能可靠读到的信息。
 - `online`（在线/离线）是接收器上报的瞬时状态，设备休眠时会显示"离线"，不代表配对失效。
-- Logi Options+ 运行时会占用接收器；读取通常仍可用，但**解除配对**前建议先退出。
+- Logi Options+ 运行时会占用接收器；读取通常仍可用，但**解除配对/配对**前建议先退出。
 - 未做代码签名，Windows 可能弹 SmartScreen 提示。
 - 仅 Windows。Linux 用户请直接用 Solaar（功能更全）。
 

@@ -19,11 +19,14 @@ from bolt_core import DeviceInfo, ReceiverInfo, ReceiverSession
 class FakeReceiver:
     """模拟 solaar Receiver 的最小接口，只实现 unpair 用得到的部分。"""
 
-    def __init__(self, *, has_force=True, force_result=True, raise_exc=None):
+    def __init__(self, *, has_force=True, force_result=True, raise_exc=None, may_unpair=True, kind="bolt"):
         self.serial = "  ABCD1234  "  # 故意带填充空格，测试 _clean
         self.name = "Bolt Receiver"
         self.max_devices = 6
         self.path = r"\\?\HID#VID_046D&PID_C548&MI_02&Col02#xxx"
+        self.receiver_kind = kind
+        self.may_unpair = may_unpair
+        self.re_pairs = False
         self.force_calls: list[int] = []
         self.legacy_calls: list[int] = []
         self._has_force = has_force
@@ -206,3 +209,47 @@ def test_interface_text():
 def test_conflicting_processes_runs():
     # 不关心结果（取决于机器上跑了什么），只要求不抛异常
     assert isinstance(core.conflicting_processes(), list)
+
+
+# --------------------------------------------------------------------------- #
+# 多接收器与配对能力
+# --------------------------------------------------------------------------- #
+def _info_of(fake):
+    session = core.ReceiverSession(receiver=fake)
+    return session.info()
+
+
+def test_receiver_capability_bolt():
+    info = _info_of(FakeReceiver())
+    assert info.kind == "bolt"
+    assert info.kind_label == "Bolt 接收器"
+    assert info.can_unpair and info.can_pair
+
+
+def test_receiver_capability_unifying():
+    info = _info_of(FakeReceiver(kind="unifying"))
+    assert info.kind_label == "优联 (Unifying) 接收器"
+    assert info.can_unpair and info.can_pair
+
+
+def test_receiver_capability_nano_cannot_unpair():
+    info = _info_of(FakeReceiver(kind="nano", may_unpair=False))
+    assert info.can_unpair is False
+    assert info.can_pair is True  # Nano 只能替换式配对
+    session = core.ReceiverSession(receiver=FakeReceiver(kind="nano", may_unpair=False))
+    session.open()
+    with pytest.raises(core.BoltError, match="不支持解除配对"):
+        session.unpair(1)
+
+
+def test_receiver_capability_lightspeed():
+    info = _info_of(FakeReceiver(kind="lightspeed"))
+    assert info.can_unpair is True
+
+
+def test_pair_run_requires_pairable_kind():
+    fake = FakeReceiver(kind="27mhz")
+    session = core.ReceiverSession(receiver=fake)
+    session.open()
+    with pytest.raises(core.BoltError, match="不支持配对"):
+        core.run_pairing(session, lambda *a: None)

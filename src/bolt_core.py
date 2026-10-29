@@ -150,6 +150,26 @@ class DeviceNotFound(BoltError):
     """接收器上不存在指定槽位。"""
 
 
+class PairingError(BoltError):
+    """配对流程失败（超时、设备拒绝等）。"""
+
+
+class PairingCancelled(BoltError):
+    """用户取消了配对流程。"""
+
+
+# 接收器型号的中文显示名（receiver_kind → 展示名）
+_RECEIVER_KIND_LABELS = {
+    "bolt": "Bolt 接收器",
+    "unifying": "优联 (Unifying) 接收器",
+    "nano": "Nano 接收器",
+    "lightspeed": "Lightspeed 接收器",
+    "27mhz": "27MHz 老式接收器",
+}
+# 可以发起配对的接收器型号（EX100 27MHz 太老，不支持）
+_PAIRABLE_KINDS = {"bolt", "unifying", "nano", "lightspeed"}
+
+
 # --------------------------------------------------------------------------- #
 # 数据结构
 # --------------------------------------------------------------------------- #
@@ -190,7 +210,14 @@ class ReceiverInfo:
     path: str | None = None
     max_devices: int | None = None
     remaining_pairings: int | None = None  # -1 / None 表示不限或读不出
+    kind: str | None = None  # bolt / unifying / nano / lightspeed
+    can_unpair: bool = True
+    can_pair: bool = True
     devices: list[DeviceInfo] = field(default_factory=list)
+
+    @property
+    def kind_label(self) -> str:
+        return _RECEIVER_KIND_LABELS.get((self.kind or "").lower(), self.kind or "接收器")
 
     @property
     def paired(self) -> int:
@@ -269,8 +296,9 @@ class ReceiverSession:
 
         if not infos:
             raise ReceiverNotFound(
-                "未找到 Logi Bolt 接收器。\n"
-                f"请确认已插入标称 {RECEIVER_USB_ID} 的接收器，并直接插在主机 USB 口上（不要走 Hub）。"
+                "未找到 Logitech 接收器。\n"
+                "支持：Bolt (046D:C548)、优联 Unifying (C52B/C532)、Lightspeed (C539)、Nano。\n"
+                "请确认接收器已直接插在主机 USB 口上（不要走 Hub）。"
             )
 
         try:
@@ -290,11 +318,16 @@ class ReceiverSession:
     # ----- 读取 -----
     def info(self) -> ReceiverInfo:
         r = self.receiver
+        kind = _clean(getattr(r, "receiver_kind", None))
+        may_unpair = bool(getattr(r, "may_unpair", False))
         info = ReceiverInfo(
-            name=str(getattr(r, "name", None) or "Logi Bolt Receiver"),
+            name=str(getattr(r, "name", None) or "接收器"),
             serial=_clean(getattr(r, "serial", None)),
             path=str(getattr(r, "path", "") or "") or None,
             max_devices=getattr(r, "max_devices", None),
+            kind=kind,
+            can_unpair=may_unpair,
+            can_pair=kind in _PAIRABLE_KINDS,
         )
         info.remaining_pairings = self._remaining_pairings()
         info.devices = self._devices()
@@ -311,23 +344,7 @@ class ReceiverSession:
     def _devices(self) -> list[DeviceInfo]:
         devices: list[DeviceInfo] = []
         for d in self.receiver:
-            slot = int(getattr(d, "number", 0))
-            online: bool | None
-            try:
-                online = bool(d.online)
-            except Exception:  # noqa: BLE001 - 设备状态读取可能因驱动/占用而任意报错
-                online = None
-            devices.append(
-                DeviceInfo(
-                    slot=slot,
-                    # 接收器返回的名字带定长填充，去掉尾部空格
-                    name=_clean(getattr(d, "name", None)) or "?",
-                    serial=_clean(getattr(d, "serial", None)),
-                    wpid=_clean(getattr(d, "wpid", None)),
-                    kind=_kind_of(d),
-                    online=online,
-                )
-            )
+            devices.append(_device_info(d))
         devices.sort(key=lambda x: x.slot)
         return devices
 
@@ -340,6 +357,12 @@ class ReceiverSession:
         """
         r = self.receiver
         slot = int(slot)
+
+        if not getattr(r, "may_unpair", False):
+            raise BoltError(
+                f"{_RECEIVER_KIND_LABELS.get((getattr(r, 'receiver_kind', '') or '').lower(), '该接收器')}"
+                "不支持解除配对（协议限制，只允许用新配对替换旧设备）。"
+            )
 
         from logitech_receiver import exceptions
 
@@ -379,6 +402,25 @@ def _clean(value) -> str | None:
     return text or None
 
 
+def _device_info(d) -> DeviceInfo:
+    """把 solaar 的 Device 对象整理成 DeviceInfo（容错一切读不出的字段）。"""
+    slot = int(getattr(d, "number", 0))
+    online: bool | None
+    try:
+        online = bool(d.online)
+    except Exception:  # noqa: BLE001 - 设备状态读取可能因驱动/占用而任意报错
+        online = None
+    return DeviceInfo(
+        slot=slot,
+        # 接收器返回的名字带定长填充，去掉尾部空格
+        name=_clean(getattr(d, "name", None)) or "?",
+        serial=_clean(getattr(d, "serial", None)),
+        wpid=_clean(getattr(d, "wpid", None)),
+        kind=_kind_of(d),
+        online=online,
+    )
+
+
 def _kind_of(device) -> str | None:
     try:
         kind = device.kind
@@ -402,6 +444,186 @@ def unpair_device(slot: int) -> int:
     """解除指定槽位的配对（一次性会话）。"""
     with ReceiverSession() as session:
         return session.unpair(slot)
+
+
+# --------------------------------------------------------------------------- #
+# 配对（添加设备）
+# --------------------------------------------------------------------------- #
+def run_pairing(
+    session: ReceiverSession,
+    notify,
+    timeout: int = 30,
+    cancel=None,
+) -> DeviceInfo:
+    """把一台新设备配到接收器上（阻塞，应在后台线程调用）。
+
+    流程复刻 Solaar 的 `solaar pair`：
+    - Bolt：写发现寄存器广播 → 设备应答（地址/认证/名称）→ pair_device 写入
+      → 若需认证则展示 passkey 指引 → 等锁关闭。
+    - 其他（Unifying/Nano/Lightspeed）：set_lock 开锁 → 等设备连接通知。
+
+    notify(event, data) 用于进度上报，事件：
+        discover {kind, timeout} — 请操作新设备进入配对模式
+        found    {name}          — 发现了设备
+        passkey  {mode, text}    — 需要用户在新设备上输入/按出 passkey
+        pairing  {}              — 正在完成配对
+    cancel 是 threading.Event，置位后尽快返回并抛 PairingCancelled。
+    成功返回新设备的 DeviceInfo。
+    """
+    import threading
+    import time as _time
+
+    from logitech_receiver import base, hidpp10, hidpp10_constants, notifications
+
+    if cancel is None:
+        cancel = threading.Event()
+
+    r = session.receiver
+    kind = (getattr(r, "receiver_kind", "") or "").lower()
+    if kind not in _PAIRABLE_KINDS:
+        raise BoltError(f"{_RECEIVER_KIND_LABELS.get(kind, '该接收器')}不支持配对新设备。")
+
+    _hidpp10 = hidpp10.Hidpp10()
+    known = {d.number for d in r}
+    original_handle = r.handle
+
+    class _HookedHandle(int):
+        """给句柄挂上通知处理钩子（复刻 solaar cli/pair.py 的做法）。"""
+
+        def notifications_hook(self, n):
+            nonlocal known
+            if n.devnumber == 0xFF:
+                notifications.process(r, n)
+            elif n.sub_id == 0x41 and len(n.data) == base.SHORT_MESSAGE_SIZE - 4:
+                # 0x41 = 设备连接通知
+                if n.devnumber not in known:
+                    r.pairing.new_device = r.register_new_device(n.devnumber, n)
+                elif r.re_pairs:  # 替换式配对（Nano）：旧槽位信息作废
+                    del r[n.devnumber]
+                    r.pairing.new_device = r.register_new_device(n.devnumber, n)
+
+    def _pump() -> None:
+        """读一条通知并分发；短超时便于及时响应取消。"""
+        raw = base.read(r.handle, timeout=0.5)
+        if raw:
+            n = base.make_notification(*raw)
+            if n:
+                r.handle.notifications_hook(n)
+
+    def _cancelled() -> bool:
+        if not cancel.is_set():
+            return False
+        return True
+
+    # 配对通知需要 WIRELESS 通告位；结束 时仅在原本没开的情况下恢复
+    old_flags = 0
+    flags_known = True
+    try:
+        old_flags = _hidpp10.get_notification_flags(r) or 0
+        if not (old_flags & hidpp10_constants.NotificationFlag.WIRELESS):
+            _hidpp10.set_notification_flags(r, old_flags | hidpp10_constants.NotificationFlag.WIRELESS)
+    except Exception:  # noqa: BLE001 - 个别接收器不支持通告位读写，配对仍可继续
+        flags_known = False
+        LOG.debug("读写通知标志失败，继续配对", exc_info=True)
+
+    r.handle = _HookedHandle(int(r.handle))
+    pairing = r.pairing
+    start = _time.time()
+    try:
+        if kind == "bolt":
+            notify("discover", {"kind": kind, "timeout": timeout})
+            r.discover(timeout=timeout)
+            while (pairing.discovering or _time.time() - start < 5) and not _cancelled():
+                if pairing.device_address and pairing.device_authentication and pairing.device_name:
+                    break
+                _pump()
+            if _cancelled():
+                r.discover(cancel=True)
+                raise PairingCancelled("已取消配对。")
+            if pairing.device_authentication is None:
+                raise PairingError(
+                    f"{timeout} 秒内没有发现可配对的设备。\n"
+                    "请确认设备支持 Bolt、已通电，并长按配对键（黄色闪电）直到指示灯快闪。"
+                )
+            notify("found", {"name": _clean(pairing.device_name) or "?"})
+            r.pair_device(
+                address=pairing.device_address,
+                authentication=pairing.device_authentication,
+                entropy=20 if pairing.device_kind == hidpp10_constants.DEVICE_KIND.keyboard else 10,
+            )
+            notify("pairing", {})
+            pairing_start = _time.time()
+            while (pairing.lock_open or _time.time() - pairing_start < 5) and not _cancelled():
+                if pairing.device_passkey:
+                    break
+                _pump()
+            if _cancelled():
+                raise PairingCancelled("已取消配对。")
+            if pairing.device_passkey:
+                if pairing.device_authentication & 0x01:
+                    notify("passkey", {"mode": "keyboard", "text": str(pairing.device_passkey)})
+                else:
+                    bits = f"{int(pairing.device_passkey):010b}"
+                    arrows = " → ".join("右" if b == "1" else "左" for b in bits)
+                    notify("passkey", {"mode": "buttons", "text": arrows})
+            while pairing.lock_open and not _cancelled():
+                _pump()
+            if _cancelled():
+                raise PairingCancelled("已取消配对。")
+        else:
+            notify("discover", {"kind": kind, "timeout": timeout})
+            r.set_lock(False, timeout=timeout)
+            while (pairing.lock_open or _time.time() - start < 5) and not _cancelled():
+                if pairing.new_device:
+                    break
+                _pump()
+            if _cancelled():
+                r.set_lock(False)  # 关锁
+                raise PairingCancelled("已取消配对。")
+    finally:
+        r.handle = original_handle
+        if flags_known and not (old_flags & hidpp10_constants.NotificationFlag.WIRELESS):
+            try:
+                _hidpp10.set_notification_flags(r, old_flags)
+            except Exception:  # noqa: BLE001
+                LOG.debug("恢复通知标志失败", exc_info=True)
+
+    if pairing.new_device:
+        return _device_info(pairing.new_device)
+    error = getattr(pairing, "error", None)
+    if error:
+        raise PairingError(f"配对失败：{error}")
+    raise PairingError(
+        "配对没有完成：接收器锁已关闭但没有新设备注册。\n"
+        "常见原因：设备被按到了其他通道、passkey 超时，或设备此前配对在别的接收器上。"
+    )
+
+
+def pair_device(notify, timeout: int = 30, cancel=None) -> DeviceInfo:
+    """配对新设备（一次性会话）。notify/cancel 语义见 run_pairing。"""
+    with ReceiverSession() as session:
+        return run_pairing(session, notify, timeout=timeout, cancel=cancel)
+
+
+def pair_event_text(event: str, data: dict) -> str | None:
+    """把配对进度事件翻译成面向用户的一句话（GUI 与 CLI 共用）。"""
+    if event == "discover":
+        timeout = data.get("timeout", 30)
+        if data.get("kind") == "bolt":
+            return (
+                f"请长按新设备上的配对键（黄色闪电标志），直到设备指示灯快闪。"
+                f"（{timeout} 秒内有效）"
+            )
+        return f"请打开新设备电源，或将其通道开关切到未占用的通道。（{timeout} 秒内有效）"
+    if event == "found":
+        return f"发现设备：{data.get('name', '?')}"
+    if event == "pairing":
+        return "正在完成配对…"
+    if event == "passkey":
+        if data.get("mode") == "keyboard":
+            return f"请在新设备上输入数字 {data.get('text', '')}，然后按回车键。"
+        return f"请在新设备上依次按下：{data.get('text', '')}\n然后同时按下左键和右键。"
+    return None
 
 
 # --------------------------------------------------------------------------- #

@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.1.1"
+__version__ = "1.2.0"
 
 import argparse
 import json
@@ -147,6 +147,26 @@ def _fail(exc: Exception, as_json: bool) -> int:
     return 1
 
 
+def _cmd_pair(timeout: int, as_json: bool) -> int:
+    """交互式配对：进度写 stderr，结果写 stdout（管道下 JSON 可解析）。"""
+
+    def notify(event: str, data: dict) -> None:
+        text = core.pair_event_text(event, data)
+        if text:
+            print(text, file=sys.stderr, flush=True)
+
+    try:
+        dev = core.pair_device(notify, timeout=timeout)
+    except core.BoltError as exc:
+        return _fail(exc, as_json)
+
+    if as_json:
+        print(json.dumps({"ok": True, "paired": dev.as_dict()}, ensure_ascii=False, indent=2))
+    else:
+        print(f"已配对：槽位 {dev.slot} {dev.name}（{dev.kind_label}，序列号 {dev.serial or '-'}）")
+    return 0
+
+
 def _cmd_watch(interval: float, as_json: bool) -> int:
     """持续轮询，只在发生变化时输出（Ctrl+C 退出）。"""
     interval = max(interval, 0.5)
@@ -207,6 +227,7 @@ def _cli(argv: list[str]) -> int:
     mode.add_argument("--list", action="store_true", help="列出配对设备后退出")
     mode.add_argument("--info", action="store_true", help="显示接收器信息与设备详情后退出")
     mode.add_argument("--unpair", type=int, metavar="SLOT", help="解除指定槽位的配对")
+    mode.add_argument("--pair", action="store_true", help="配对一台新设备（按提示在设备上操作）")
     mode.add_argument(
         "--watch",
         type=float,
@@ -216,6 +237,7 @@ def _cli(argv: list[str]) -> int:
         help="持续监控设备增减（默认每 2 秒），Ctrl+C 退出",
     )
     parser.add_argument("--json", action="store_true", help="以 JSON 输出（可与 --list/--info/--unpair 组合）")
+    parser.add_argument("--timeout", type=int, default=30, metavar="SECONDS", help="--pair 的等待时长（默认 30 秒）")
     parser.add_argument("-y", "--yes", action="store_true", help="解除配对时不询问确认（脚本用）")
     parser.add_argument("--debug", action="store_true", help="打印 solaar/hidapi 调试日志到 stderr")
     parser.add_argument("--version", action="version", version=f"BoltManager {__version__}")
@@ -225,15 +247,17 @@ def _cli(argv: list[str]) -> int:
         _configure_logging(args.debug)
         return _cmd_watch(args.watch, args.json)
 
-    if not (args.list or args.info or args.unpair is not None):
-        if args.json or args.yes:
-            parser.error("--json/--yes 需要与 --list、--info、--unpair 或 --watch 一起使用")
+    if not (args.list or args.info or args.unpair is not None or args.pair):
+        if args.json or args.yes or args.timeout != 30:
+            parser.error("--json/--yes/--timeout 需要与 --list、--info、--unpair、--pair 或 --watch 一起使用")
         return -1  # 交给 GUI
 
     _configure_logging(args.debug)
 
     if args.unpair is not None:
         return _cmd_unpair(args.unpair, args.yes, args.json)
+    if args.pair:
+        return _cmd_pair(args.timeout, args.json)
     if args.info:
         return _cmd_info(args.json)
     return _cmd_list(args.json)
@@ -412,6 +436,8 @@ class App:
         self.btn_refresh.pack(side="left")
         self.btn_unpair = ttk.Button(bar, text="解除配对", width=11, command=self.on_unpair)
         self.btn_unpair.pack(side="left", padx=(6, 0))
+        self.btn_pair = ttk.Button(bar, text="添加设备…", width=11, command=self.on_pair)
+        self.btn_pair.pack(side="left", padx=(6, 0))
         self.btn_copy = ttk.Button(bar, text="复制", width=8, command=self.on_copy)
         self.btn_copy.pack(side="left", padx=(6, 0))
         self.btn_export = ttk.Button(bar, text="导出 CSV", width=10, command=self.on_export)
@@ -529,9 +555,19 @@ class App:
 
     def _set_busy(self, busy: bool) -> None:
         self.busy = busy
-        state = "disabled" if busy else "normal"
-        for btn in (self.btn_refresh, self.btn_unpair, self.btn_copy, self.btn_export):
-            btn.config(state=state)
+        if not busy:
+            self._update_button_states()
+            return
+        for btn in (self.btn_refresh, self.btn_unpair, self.btn_pair, self.btn_copy, self.btn_export):
+            btn.config(state="disabled")
+
+    def _update_button_states(self) -> None:
+        """按当前接收器的能力开关按钮（Nano 不能解配对、27MHz 不能配对等）。"""
+        info = self.info
+        can_unpair = bool(info and info.can_unpair)
+        can_pair = bool(info and info.can_pair)
+        self.btn_unpair.config(state="normal" if can_unpair else "disabled")
+        self.btn_pair.config(state="normal" if can_pair else "disabled")
 
     def _poll_queue(self) -> None:
         try:
@@ -545,6 +581,10 @@ class App:
                         self.set_status(f"共 {len(payload.devices)} 台配对设备 · 最后刷新 {stamp}")
                     else:
                         self._render_failure(payload)
+                elif tag == "pair_progress":
+                    self._update_pair_dialog(payload)
+                elif tag == "pair":
+                    self._finish_pair(ok, payload)
                 elif tag == "unpair":
                     if ok:
                         self.set_status(f"已解除槽位 {payload} 的配对 ✔")
@@ -563,7 +603,7 @@ class App:
         # 序列号完整显示，不再截断——这正是用户排查设备时最需要的字段
         self.var_head.set(f"{info.name}　已配对 {info.paired}/{info.max_devices or '?'}")
         self.var_sub.set(
-            f"序列号 {info.serial or '—'}　·　剩余可配对 {info.remaining_label}"
+            f"{info.kind_label}　·　序列号 {info.serial or '—'}　·　剩余可配对 {info.remaining_label}"
             f"　·　接口 {_interface_text(info.path)}"
         )
 
@@ -589,6 +629,8 @@ class App:
             self.tree.focus(first)
         else:
             self._show_detail()
+        # _set_busy(False) 在 _render 之前执行，能力按钮要按新数据再刷一次
+        self._update_button_states()
 
     def _render_failure(self, message: str) -> None:
         self.info = None
@@ -596,6 +638,7 @@ class App:
         self.var_sub.set(message.splitlines()[0] if message else "")
         self.tree.delete(*self.tree.get_children())
         self._show_detail()
+        self._update_button_states()
         self.set_status("读取失败：" + message.replace("\n", " "))
 
     def _show_detail(self) -> None:
@@ -658,6 +701,90 @@ class App:
         self._set_busy(True)
         self.set_status(f"正在解除槽位 {slot} 的配对…")
         self.run_bg(lambda: core.unpair_device(slot), "unpair")
+
+    # ---------------- 添加设备（配对向导） ----------------
+    def on_pair(self) -> None:
+        if self.busy:
+            return
+        if not (self.info and self.info.can_pair):
+            messagebox.showinfo("提示", "当前接收器不支持配对新设备。", parent=self.root)
+            return
+        self._pair_cancel = threading.Event()
+        self._pair_name: str | None = None
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("添加设备")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        self._pair_dialog = dialog
+
+        frame = ttk.Frame(dialog, padding=(18, 16))
+        frame.pack(fill="both", expand=True)
+        self.var_pair_step = tk.StringVar(value="正在准备配对…")
+        ttk.Label(frame, textvariable=self.var_pair_step, wraplength=340, justify="left", font=(
+            "Segoe UI", 10,
+        )).pack(anchor="w")
+        self.var_pair_detail = tk.StringVar(value="")
+        ttk.Label(frame, textvariable=self.var_pair_detail, wraplength=340, justify="left", foreground="#666").pack(
+            anchor="w", pady=(10, 0)
+        )
+        bar = ttk.Frame(frame)
+        bar.pack(fill="x", pady=(14, 0))
+        ttk.Button(bar, text="取消", width=10, command=self._cancel_pair).pack(side="right")
+
+        self._set_busy(True)
+        self.set_status("配对进行中，请在设备上操作…")
+        self.run_bg(
+            lambda: core.run_pairing(
+                core.ReceiverSession(), notify=self._pair_notify, cancel=self._pair_cancel
+            ),
+            "pair",
+        )
+
+    def _pair_notify(self, event: str, data: dict) -> None:
+        """配对线程的进度回调（线程安全：只往队列里放）。"""
+        self.q.put(("pair_progress", True, (event, data)))
+
+    def _update_pair_dialog(self, payload) -> None:
+        event, data = payload
+        if event == "found":
+            self._pair_name = data.get("name")
+        text = core.pair_event_text(event, data)
+        if not text:
+            return
+        if event == "discover":
+            self.var_pair_step.set(text)
+        else:
+            self.var_pair_detail.set(text)
+            if event == "passkey":
+                self.var_pair_step.set(f"发现设备：{self._pair_name or '新设备'}，按提示完成认证")
+
+    def _cancel_pair(self) -> None:
+        if getattr(self, "_pair_cancel", None):
+            self._pair_cancel.set()
+
+    def _finish_pair(self, ok: bool, payload) -> None:
+        cancelled = bool(getattr(self, "_pair_cancel", None) and self._pair_cancel.is_set())
+        dialog = getattr(self, "_pair_dialog", None)
+        if dialog is not None:
+            try:
+                dialog.grab_release()
+                dialog.destroy()
+            except tk.TclError:
+                pass
+            self._pair_dialog = None
+        if ok:
+            name = payload.name if hasattr(payload, "name") else "?"
+            slot = payload.slot if hasattr(payload, "slot") else "?"
+            self.set_status(f"已配对槽位 {slot}「{name}」✔")
+            messagebox.showinfo("添加设备", f"配对成功：槽位 {slot}「{name}」", parent=self.root)
+            self.refresh(quiet=True)
+        elif cancelled:
+            self.set_status("已取消配对。")
+        else:
+            messagebox.showerror("添加设备失败", payload, parent=self.root)
+            self.set_status("配对失败。")
 
     def on_copy(self) -> None:
         if not self.info or not self.info.devices:
