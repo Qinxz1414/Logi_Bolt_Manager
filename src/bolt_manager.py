@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.3.2"
+__version__ = "1.3.3"
 
 import argparse
 import json
@@ -266,6 +266,13 @@ def _cli(argv: list[str]) -> int:
 # --------------------------------------------------------------------------- #
 # 图形界面
 # --------------------------------------------------------------------------- #
+# 窗口尺寸设计（按 96 DPI 标准物理像素计，实际运行时按系统 DPI 缩放）：
+# 实测完整 UI 最小需求 857x603（工具栏按钮组 + 设备表 5 列 + 详情面板 238px），
+# 最小尺寸须 ≥ 该需求，否则控件被裁剪；默认尺寸在需求之上留出呼吸空间。
+MIN_WINDOW = (880, 620)
+DEFAULT_WINDOW = (980, 640)
+
+
 def _enable_high_dpi() -> None:
     """开启 DPI 感知，避免高分屏下整个界面被系统拉伸成模糊位图。
 
@@ -343,7 +350,7 @@ class App:
     def _build_ui(self) -> None:
         root = self.root
         root.title(f"Logi Bolt 接收器管理器 v{__version__}")
-        root.minsize(780, 540)
+        self._ui_scale = max(1.0, root.winfo_fpixels("1i") / 96.0)
         icon = _asset_path("bolt.ico")
         if icon:
             try:
@@ -479,50 +486,52 @@ class App:
 
     # ---------------- 设置 / 窗口状态 ----------------
     def _apply_geometry(self) -> None:
+        s = self._ui_scale
+        min_w, min_h = round(MIN_WINDOW[0] * s), round(MIN_WINDOW[1] * s)
+        self.root.minsize(min_w, min_h)
         geometry = str(self.settings.get("geometry") or "")
-        safe = self._safe_geometry(geometry)
-        if safe:
-            try:
-                self.root.geometry(safe)
-            except tk.TclError:
-                pass
-
-    def _safe_geometry(self, geometry: str) -> str:
-        """校验记忆的窗口尺寸/位置，越界（换显示器、分辨率变小）时退回默认值。"""
-        if not geometry:
-            return ""
-        size = geometry.split("+")[0].split("-")[0]
+        safe = self._safe_geometry(geometry, min_w, min_h)
         try:
-            w, h = (int(v) for v in size.split("x"))
-        except ValueError:
-            return ""
-        if not (560 <= w <= 4000 and 380 <= h <= 3000):
-            return ""
-        pos = geometry[len(size) :]
-        if not pos:
-            return size
+            self.root.geometry(safe)
+        except tk.TclError:
+            pass
 
-        def _coord(text: str, sign: str) -> int | None:
-            if not text.startswith(sign):
-                return None
-            try:
-                return int(text[1:])
-            except ValueError:
-                return None
+    def _default_geometry(self) -> str:
+        """无有效记忆尺寸时使用：按 DPI 缩放的默认尺寸，位置交给窗口管理器。"""
+        s = self._ui_scale
+        return f"{round(DEFAULT_WINDOW[0] * s)}x{round(DEFAULT_WINDOW[1] * s)}"
 
-        match = re.fullmatch(r"([+-]\d+)([+-]\d+)", pos)
+    def _safe_geometry(self, geometry: str, min_w: int, min_h: int) -> str:
+        """校验记忆的窗口尺寸/位置：无效退回默认；偏小则钳制到最小尺寸（不拒绝，\
+        否则旧版本保存的小尺寸会永远生效）；位置越界（换显示器、分辨率变小）时丢弃位置。"""
+        match = re.fullmatch(r"(\d+)x(\d+)((?:[+-]\d+){0,2})", geometry or "")
         if not match:
-            return size
-        x = _coord(match.group(1), "+") or _coord(match.group(1), "-")
-        y = _coord(match.group(2), "+") or _coord(match.group(2), "-")
-        if x is None or y is None:
-            return size
+            return self._default_geometry()
+        w, h, pos = int(match.group(1)), int(match.group(2)), match.group(3)
+        # 旧版默认尺寸（小于真实内容需求）视为未设置，升级后应用新默认
+        if (w, h) == (840, 560):
+            return self._default_geometry()
+        # 尺寸钳制：小于最小尺寸（旧版默认/换小屏）时抬到最小，过大视为损坏
+        if w > 4000 or h > 3000:
+            return self._default_geometry()
+        w, h = max(w, min_w), max(h, min_h)
+
+        if not pos:
+            return f"{w}x{h}"
+        parts = re.findall(r"[+-]\d+", pos)
+        try:
+            x = int(parts[0])
+            y = int(parts[1]) if len(parts) > 1 else None
+        except (IndexError, ValueError):
+            return f"{w}x{h}"
+        if y is None:
+            return f"{w}x{h}{x:+d}"
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
         # 允许负坐标（副屏在左/上），但至少留 120px 在可见区域内
         if x > screen_w - 120 or y > screen_h - 80 or x < -w + 120 or y < -40:
-            return size
-        return geometry
+            return f"{w}x{h}"
+        return f"{w}x{h}{x:+d}{y:+d}"
 
     def _restore_auto_refresh(self) -> None:
         seconds = int(self.settings.get("auto_refresh_seconds") or 0)

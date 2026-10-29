@@ -705,7 +705,8 @@ def settings_path() -> Path:
 
 
 DEFAULT_SETTINGS: dict = {
-    "geometry": "840x560",
+    # 实测 UI 最小需求 857x603（无高 DPI 缩放），默认给足余量；由 GUI 按 DPI 再缩放
+    "geometry": "980x640",
     "auto_refresh_seconds": 15,
 }
 
