@@ -1,0 +1,15 @@
+# 统一换行符，避免 cmd 脚本在 Git 往返后失效
+* text=auto
+
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+*.py text eol=lf
+*.md text eol=lf
+*.spec text eol=lf
+
+*.ico binary
+*.exe binary
+*.dll binary
+*.pyd binary
