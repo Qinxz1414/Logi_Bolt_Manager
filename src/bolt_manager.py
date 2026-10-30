@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 
 import argparse
 import json
@@ -516,20 +516,28 @@ class App:
         tree_wrap.pack(side="left", fill="both", expand=True)
         cols = ("slot", "name", "kind", "serial", "battery", "online")
         headers = ("槽位", "设备名称", "类型", "序列号", "电量", "状态")
-        widths = (56, 220, 76, 168, 96, 64)
+        # 固定列宽总和必须留够名称列的空间：窗口默认 980 / 最小 880 时
+        # 表格可用宽度分别约 652 / 511，固定列 386 之后名称列还剩 266 / 125
+        widths = (48, 220, 64, 130, 88, 56)
+        self._tree_fixed = {"slot": 48, "kind": 64, "serial": 130, "battery": 88, "online": 56}
         self.tree = ttk.Treeview(tree_wrap, columns=cols, show="headings", height=9, selectmode="browse")
         for c, h, w in zip(cols, headers, widths, strict=True):
             self.tree.heading(c, text=h)
             self.tree.column(
                 c,
                 width=w,
-                minwidth=44,
+                minwidth=110 if c == "name" else 44,
                 # 名称列吸收多余宽度（窗口变宽时优先给设备名，而不是留白）
                 stretch=(c == "name"),
                 anchor="center" if c in ("slot", "kind", "online", "battery") else "w",
             )
         self.tree.tag_configure("offline", foreground="#999")
         self.tree.tag_configure("odd", background="#f7f7f8")  # 斑马纹：长列表更好扫读
+        # 名称列宽度随表格实际宽度浮动：固定列总宽 386，窗口最小 880 时名称列剩约
+        # 125px。不做这一步的话，初始窗口下列宽总和超过可用宽度，最后一列（电量）
+        # 会被裁掉，要靠最大化-还原触发重新布局才正常
+        self.tree.bind("<Configure>", self._fit_tree_columns)
+        self.root.after_idle(self._fit_tree_columns)
         scroll = ttk.Scrollbar(tree_wrap, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -826,6 +834,19 @@ class App:
         self._show_detail()
         self._update_button_states()
         self.set_status("读取失败：" + message.replace("\n", " "))
+
+    def _fit_tree_columns(self, event=None) -> None:
+        """按表格实际可用宽度重新分配名称列，保证所有列都不被裁剪。
+
+        窗口尺寸变化（含首次布局）都会走到这里；名称列有 110px 下限，
+        再窄就靠横向压缩名称，而不是把右侧「电量/状态」挤出可视区。
+        """
+        avail = (event.width if event is not None else self.tree.winfo_width()) - 2
+        if avail <= 1:
+            return
+        name_w = max(avail - sum(self._tree_fixed.values()), 110)
+        if abs(self.tree.column("name", "width") - name_w) > 1:
+            self.tree.column("name", width=name_w)
 
     def _show_detail(self) -> None:
         slot = self.selected_slot()
