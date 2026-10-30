@@ -253,3 +253,120 @@ def test_pair_run_requires_pairable_kind():
     session.open()
     with pytest.raises(core.BoltError, match="不支持配对"):
         core.run_pairing(session, lambda *a: None)
+
+
+# --------------------------------------------------------------------------- #
+# 配对：最后一步的即时反馈（confirming 事件先于阻塞的设备注册）
+# --------------------------------------------------------------------------- #
+class _FakePairing:
+    """模拟 receiver.pairing 状态机。"""
+
+    def __init__(self):
+        self.discovering = False
+        self.device_address = None
+        self.device_authentication = None
+        self.device_name = None
+        self.device_passkey = None
+        self.device_kind = 0  # 非键盘即可（不影响断言）
+        self.lock_open = False
+        self.new_device = None
+        self.error = None
+
+
+class _FakeNotification:
+    def __init__(self, sub_id, address, data=b"\x00", devnumber=0xFF):
+        self.sub_id = sub_id
+        self.address = address
+        self.data = data
+        self.devnumber = devnumber
+
+
+def test_pairing_emits_confirming_before_device_registration(monkeypatch):
+    """Bolt 配对成功：confirming 通知必须抢在阻塞的 register_new_device 之前发出。"""
+    import types
+
+    from logitech_receiver import base as lr_base
+    from logitech_receiver import hidpp10 as lr_hidpp10
+    from logitech_receiver import notifications as lr_notifications
+
+    events: list[str] = []
+    order: list[str] = []
+
+    class FakeHidpp10:
+        def get_notification_flags(self, r):
+            return 0
+
+        def set_notification_flags(self, r, flags):
+            pass
+
+    pairing = _FakePairing()
+    new_device = types.SimpleNamespace(
+        number=7, name="K98M", serial="SN0001", wpid="B35C", online=True, kind=None
+    )
+
+    class FakeBoltReceiver:
+        receiver_kind = "bolt"
+        re_pairs = False
+
+        def __init__(self):
+            self.handle = 5
+            self.pairing = pairing
+
+        def __iter__(self):
+            return iter([])
+
+        def discover(self, timeout=30, cancel=None):
+            pairing.discovering = False
+            pairing.device_address = b"\x01\x02\x03\x04\x05\x06"
+            pairing.device_authentication = 0x01  # 键盘：数字 passkey
+            pairing.device_name = "K98M"
+
+        def pair_device(self, **kwargs):
+            pairing.lock_open = True
+
+        def register_new_device(self, number, notification=None):
+            order.append("register_start")
+            pairing.new_device = new_device
+            order.append("register_done")
+            return new_device
+
+    receiver = FakeBoltReceiver()
+
+    # base.read 脚本：passkey 请求 → 配对成功（0x54 地址 0x02）→ 之后无通知
+    script = [
+        _FakeNotification(0x4D, 0x00),  # PASSKEY_REQUEST
+        _FakeNotification(0x54, 0x02, data=b"\x00"),  # PAIRING_STATUS 成功
+    ]
+    monkeypatch.setattr(
+        lr_base,
+        "read",
+        lambda handle, timeout=1.0: (lambda: (script.pop(0),) if script else None)(),
+    )
+    monkeypatch.setattr(lr_base, "make_notification", lambda *a: a[0])
+    monkeypatch.setattr(lr_hidpp10, "Hidpp10", FakeHidpp10)
+
+    def fake_process(r, n):
+        if n.sub_id == 0x4D:
+            r.pairing.device_passkey = 1234
+        elif n.sub_id == 0x54:
+            r.pairing.lock_open = False
+            r.register_new_device(7)
+
+    monkeypatch.setattr(lr_notifications, "process", fake_process)
+
+    def notify(event, data):
+        events.append(event)
+        if event == "confirming":
+            order.append("confirming_event")
+
+    result = core.run_pairing(core.ReceiverSession(receiver=receiver), notify)  # type: ignore[arg-type]
+
+    assert result.slot == 7 and result.name == "K98M"
+    assert "confirming" in events
+    # 关键断言：confirming 反馈发生在阻塞注册开始之前
+    assert order.index("confirming_event") < order.index("register_start")
+
+
+def test_pair_event_text_confirming():
+    text = core.pair_event_text("confirming", {})
+    assert text and "配对已确认" in text

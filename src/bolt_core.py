@@ -543,6 +543,7 @@ def run_pairing(
     _hidpp10 = hidpp10.Hidpp10()
     known = {d.number for d in r}
     original_handle = r.handle
+    confirmed = {"reported": False}
 
     class _HookedHandle(int):
         """给句柄挂上通知处理钩子（复刻 solaar cli/pair.py 的做法）。"""
@@ -550,13 +551,28 @@ def run_pairing(
         def notifications_hook(self, n):
             nonlocal known
             if n.devnumber == 0xFF:
+                # 配对锁关闭意味着接收器已确认结果；但上游处理这条通知时会同步
+                # 注册新设备（读 wpid/序列号/名称，阻塞数秒）。抢在它之前给界面
+                # 发一次“配对已确认”反馈，避免最后一步迟迟没有反应。
+                if not confirmed["reported"] and n.sub_id in (0x54, 0x4B):
+                    bolt_done = n.sub_id == 0x54 and n.address != 0x00
+                    lock_closed = n.sub_id == 0x4B and not (n.address & 0x01)
+                    if bolt_done or lock_closed:
+                        confirmed["reported"] = True
+                        notify("confirming", {})
                 notifications.process(r, n)
             elif n.sub_id == 0x41 and len(n.data) == base.SHORT_MESSAGE_SIZE - 4:
                 # 0x41 = 设备连接通知
                 if n.devnumber not in known:
+                    if not confirmed["reported"]:
+                        confirmed["reported"] = True
+                        notify("confirming", {})
                     r.pairing.new_device = r.register_new_device(n.devnumber, n)
                 elif r.re_pairs:  # 替换式配对（Nano）：旧槽位信息作废
                     del r[n.devnumber]
+                    if not confirmed["reported"]:
+                        confirmed["reported"] = True
+                        notify("confirming", {})
                     r.pairing.new_device = r.register_new_device(n.devnumber, n)
 
     def _pump() -> None:
@@ -637,6 +653,14 @@ def run_pairing(
             if _cancelled():
                 r.set_lock(False)  # 关锁
                 raise PairingCancelled("已取消配对。")
+            # 锁关了但 0x41 连接通知还没到：新设备注册在上游是阻塞的（读设备信息），
+            # 再等几秒，避免把“其实已经成功”误报成“配对没有完成”
+            if pairing.new_device is None and getattr(pairing, "error", None) is None:
+                grace_end = _time.time() + 4
+                while _time.time() < grace_end and not _cancelled():
+                    if pairing.new_device:
+                        break
+                    _pump()
     finally:
         r.handle = original_handle
         if flags_known and not (old_flags & hidpp10_constants.NotificationFlag.WIRELESS):
@@ -676,6 +700,8 @@ def pair_event_text(event: str, data: dict) -> str | None:
         return f"发现设备：{data.get('name', '?')}"
     if event == "pairing":
         return "正在完成配对…"
+    if event == "confirming":
+        return "配对已确认！正在读取新设备信息，请稍候…"
     if event == "passkey":
         if data.get("mode") == "keyboard":
             return f"请在新设备上输入数字 {data.get('text', '')}，然后按回车键。"

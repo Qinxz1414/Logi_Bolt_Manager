@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.4.2"
+__version__ = "1.4.3"
 
 import argparse
 import json
@@ -998,6 +998,9 @@ class App:
             return
         if event == "discover":
             self.var_pair_step.set(text)
+        elif event == "confirming":
+            self.var_pair_step.set("✔ 配对成功")
+            self.var_pair_detail.set("正在读取新设备信息，请稍候…")
         else:
             self.var_pair_detail.set(text)
             if event == "passkey":
