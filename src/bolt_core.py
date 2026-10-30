@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import sys
+import time
 import unicodedata
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -454,6 +455,16 @@ def _kind_of(device) -> str | None:
 # --------------------------------------------------------------------------- #
 # 便捷函数（一次性读快照）
 # --------------------------------------------------------------------------- #
+# 接收器 USB PID → 显示名（从 HID 路径解析，无需打开设备）
+# 枚举返回的 product 常是通用的 "USB Receiver"，区分度全靠 PID
+_RECEIVER_PID_NAMES = {
+    "C548": "Bolt 接收器",
+    "C52B": "Unifying 优联接收器",
+    "C532": "Unifying 优联接收器",
+    "C539": "Lightspeed 接收器",
+}
+
+
 def list_receivers() -> list[ReceiverChoice]:
     """枚举所有接入的接收器（不做任何打开操作，只读 HID 描述）。
 
@@ -471,7 +482,12 @@ def list_receivers() -> list[ReceiverChoice]:
         if not p or p in seen:
             continue
         seen.add(p)
-        choices.append(ReceiverChoice(path=p, name=str(getattr(i, "product", None) or "接收器")))
+        pid = ""
+        lowered = p.upper()
+        if "&PID_" in lowered:  # ...VID_046D&PID_C548&MI_02...
+            pid = lowered.split("&PID_")[1].split("&")[0]
+        name = _RECEIVER_PID_NAMES.get(pid) or str(getattr(i, "product", None) or "接收器")
+        choices.append(ReceiverChoice(path=p, name=name))
     return choices
 
 
@@ -816,6 +832,10 @@ def acquire_single_instance() -> bool:
 # --------------------------------------------------------------------------- #
 # 环境检查
 # --------------------------------------------------------------------------- #
+# 可能独占接收器的官方软件进程名前缀（小写）
+_CONFLICT_MARKERS = ("logioptionsplus", "logitune", "lghub", "logitech")
+
+
 def conflicting_processes() -> list[str]:
     """返回正在运行、可能独占接收器的官方软件进程名。"""
     try:
@@ -823,7 +843,7 @@ def conflicting_processes() -> list[str]:
     except ImportError:
         return []
 
-    markers = ("logioptionsplus", "logitune", "lghub", "logitech")
+    markers = _CONFLICT_MARKERS
     found: list[str] = []
     for proc in psutil.process_iter(["name"]):
         try:
@@ -835,44 +855,136 @@ def conflicting_processes() -> list[str]:
     return sorted(set(found))
 
 
-def kill_conflicting_processes(timeout: float = 3.0) -> tuple[list[str], list[str]]:
-    """结束可能独占接收器的官方软件进程（Logi Options+ / G HUB 等）。
+def _conflicting_services() -> list[str]:
+    """查找正在运行、且可执行文件路径匹配冲突标记的 Windows 服务。
 
-    先温和 terminate，等待 timeout 秒后对仍存活的进程强 kill，最后复查。
-
-    :returns: (已结束的进程名列表, 结束后仍在运行的进程名列表)
+    Options+ 的 OptionsPlusUpdaterService（LocalSystem）会在进程被杀后几秒内
+    自动重新拉起 agent——只杀进程不杀服务等于白杀。内核驱动（\\drivers\\ 路径）
+    一律跳过，绝不碰。
     """
     try:
         import psutil
     except ImportError:
-        return [], []
+        return []
+    if sys.platform != "win32" or not hasattr(psutil, "win_service_iter"):
+        return []
 
-    markers = ("logioptionsplus", "logitune", "lghub", "logitech")
-    targets: list[psutil.Process] = []
-    for proc in psutil.process_iter(["name"]):
-        try:
-            name = (proc.info.get("name") or "").lower()
-        except Exception:  # noqa: BLE001 - 进程可能已退出
-            continue
-        if name and any(name.startswith(m) for m in markers):
-            targets.append(proc)
-    if not targets:
-        return [], []
+    markers = _CONFLICT_MARKERS
+    found: list[str] = []
+    try:
+        for svc in psutil.win_service_iter():
+            try:
+                info = svc.as_dict()
+            except Exception:  # noqa: BLE001 - 服务枚举可能部分失败
+                continue
+            binpath = (info.get("binpath") or "").lower()
+            name = (info.get("name") or "").lower()
+            if "\\drivers\\" in binpath:  # 内核驱动不动
+                continue
+            if (info.get("status") == "running") and any(m in binpath or m in name for m in markers):
+                found.append(info["name"])
+    except Exception:  # noqa: BLE001 - 服务枚举失败不影响杀进程
+        LOG.debug("枚举 Windows 服务失败", exc_info=True)
+    return sorted(set(found))
 
-    for proc in targets:
-        try:
-            proc.terminate()
-        except psutil.Error:
-            continue
 
-    _gone, alive = psutil.wait_procs(targets, timeout=timeout)
-    for proc in alive:
+def _stop_service(name: str) -> bool:
+    """通过 Windows API 停止服务（不依赖外部命令）。需要管理员权限，失败返回 False。"""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    SC_MANAGER_ALL_ACCESS = 0xF003F
+    SERVICE_STOP = 0x0020
+    SERVICE_QUERY_STATUS = 0x0004
+    SERVICE_CONTROL_STOP = 1
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi32.OpenSCManagerW.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD)
+    advapi32.OpenSCManagerW.restype = wintypes.SC_HANDLE
+    advapi32.OpenServiceW.argtypes = (wintypes.SC_HANDLE, wintypes.LPCWSTR, wintypes.DWORD)
+    advapi32.OpenServiceW.restype = wintypes.SC_HANDLE
+    advapi32.ControlService.argtypes = (wintypes.SC_HANDLE, wintypes.DWORD, ctypes.c_void_p)
+    advapi32.ControlService.restype = wintypes.BOOL
+    advapi32.CloseServiceHandle.argtypes = [wintypes.SC_HANDLE]
+    advapi32.CloseServiceHandle.restype = wintypes.BOOL
+
+    mgr = advapi32.OpenSCManagerW(None, None, SC_MANAGER_ALL_ACCESS)
+    if not mgr:
+        return False  # 通常是没有管理员权限
+    try:
+        svc = advapi32.OpenServiceW(mgr, name, SERVICE_STOP | SERVICE_QUERY_STATUS)
+        if not svc:
+            return False
         try:
-            proc.kill()
-        except psutil.Error:
-            continue
-    psutil.wait_procs(alive, timeout=1.0)
+            status = (wintypes.DWORD * 7)()  # SERVICE_STATUS 结构体的 7 个 DWORD
+            return bool(advapi32.ControlService(svc, SERVICE_CONTROL_STOP, status))
+        finally:
+            advapi32.CloseServiceHandle(svc)
+    finally:
+        advapi32.CloseServiceHandle(mgr)
+
+
+def kill_conflicting_processes(timeout: float = 3.0) -> tuple[list[str], list[str], list[str], list[str]]:
+    """彻底结束可能独占接收器的官方软件（Logi Options+ / G HUB 等）。
+
+    三步走：
+    1. 停掉相关的 Windows 服务（Options+ 的 updater 服务会自动复活进程）
+    2. 结束进程：updater 类先杀（掐断复活源头），再温和 terminate、
+       超时后强 kill
+    3. 复查两轮（每轮 1.5 秒），把复活/漏网的进程再杀一遍
+
+    :returns: (已结束的进程名列表, 结束后仍在运行的进程名列表,
+               已停止的服务名列表, 停止失败的服务名列表)
+    """
+    try:
+        import psutil
+    except ImportError:
+        return [], [], [], []
+
+    services = _conflicting_services()
+    stopped_services = [n for n in services if _stop_service(n)]
+    failed_services = [n for n in services if n not in stopped_services]
+
+    markers = _CONFLICT_MARKERS
+
+    def _find_targets() -> list:
+        targets: list = []
+        for proc in psutil.process_iter(["name"]):
+            try:
+                name = (proc.info.get("name") or "").lower()
+            except Exception:  # noqa: BLE001 - 进程可能已退出
+                continue
+            if name and any(name.startswith(m) for m in markers):
+                targets.append(proc)
+        # updater 类先杀：它是拉起其他进程的源头
+        targets.sort(key=lambda p: ("updater" not in (p.info.get("name") or "").lower()))
+        return targets
+
+    targets = _find_targets()
+    if not targets and not services:
+        return [], [], [], []
+
+    attempted: set[str] = set()
+    for _round in range(3):  # 初杀 + 两轮复活复查
+        for proc in targets:
+            attempted.add((proc.info.get("name") or proc.name() or "").lower())
+            try:
+                proc.terminate()
+            except psutil.Error:
+                continue
+        _gone, alive = psutil.wait_procs(targets, timeout=timeout if _round == 0 else 0.5)
+        for proc in alive:
+            try:
+                proc.kill()
+            except psutil.Error:
+                continue
+        psutil.wait_procs(alive, timeout=1.0)
+        time.sleep(1.5)  # 给服务/守护逻辑复活的时间窗
+        targets = _find_targets()
+        if not targets:
+            break
 
     remaining = conflicting_processes()
-    attempted = sorted({(p.info.get("name") or p.name() or "").lower() for p in targets})
-    return attempted, remaining
+    return sorted(attempted), remaining, stopped_services, failed_services

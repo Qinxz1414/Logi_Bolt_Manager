@@ -72,9 +72,11 @@ def test_kill_ends_matching_processes(monkeypatch, _bind_fake):
     unrelated = _FakeProc("explorer.exe")
     fake_psutil = make_fake_psutil(monkeypatch, [agent, updater, unrelated])
 
-    killed, remaining = bolt_core.kill_conflicting_processes()
+    killed, remaining, stopped, failed = bolt_core.kill_conflicting_processes()
 
     assert killed == ["logioptionsplus_agent.exe", "logioptionsplus_updater.exe"]
+    assert stopped == []  # 假 psutil 无服务接口，跳过
+    assert failed == []
     assert agent.terminated and updater.terminated
     assert remaining == []
 
@@ -83,10 +85,12 @@ def test_kill_no_conflicts(monkeypatch, _bind_fake):
     global fake_psutil
     make_fake_psutil(monkeypatch, [_FakeProc("explorer.exe")])
 
-    killed, remaining = bolt_core.kill_conflicting_processes()
+    killed, remaining, stopped, failed = bolt_core.kill_conflicting_processes()
 
     assert killed == []
     assert remaining == []
+    assert stopped == []
+    assert failed == []
 
 
 def test_kill_access_denied_reports_remaining(monkeypatch, _bind_fake):
@@ -95,8 +99,9 @@ def test_kill_access_denied_reports_remaining(monkeypatch, _bind_fake):
     agent.deny = True
     fake_psutil = make_fake_psutil(monkeypatch, [agent])
 
-    killed, remaining = bolt_core.kill_conflicting_processes()
+    killed, remaining, stopped, failed = bolt_core.kill_conflicting_processes()
 
     # 目标被尝试过（killed 含其名字），但权限不足没结束掉 → remaining 报告
     assert "logioptionsplus_agent.exe" in killed
     assert remaining == ["logioptionsplus_agent.exe"]
+    assert failed == []

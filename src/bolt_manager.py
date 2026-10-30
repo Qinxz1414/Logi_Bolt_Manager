@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.4.0"
+__version__ = "1.4.2"
 
 import argparse
 import json
@@ -29,6 +29,7 @@ import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from tkinter import font as tkfont
 
 import bolt_core as core
 
@@ -382,6 +383,8 @@ class App:
         self.info: core.ReceiverInfo | None = None
         self._recv_path: str | None = None  # 当前选中的接收器（多接收器场景）
         self._recv_choices: list[core.ReceiverChoice] = []
+        self._recv_choices_at = 0.0  # 上次枚举接收器列表的时间（缓存 3 秒）
+        self._recv_combo_index = 0  # 下拉框当前显示的下标（忙碌时回退用）
         self._auto_after: str | None = None
         self._closing = False
 
@@ -464,29 +467,33 @@ class App:
         body = ttk.Frame(outer)
         body.pack(fill="both", expand=True, pady=(8, 8))
 
-        # 详情面板：显式锁定宽高并关掉传播。不锁的话，不同设备的文本宽度不同，
-        # 面板请求尺寸跟着变，整个窗口会随选择"跳动"——这是布局稳定性的关键。
-        # 注意：面板内部子控件用 grid 管理，必须调 grid_propagate(False)，
-        # pack_propagate 对 grid 布局的子控件不生效。
-        detail = ttk.LabelFrame(body, text="设备详情", padding=(12, 10), width=238, height=380)
+        # 详情面板：宽度按「32 位十六进制序列号单行不折」实测计算，高度锁定在
+        # 内容需求附近——尺寸不随选中设备变化，窗口就不会跟着"跳动"。
+        # 注意：面板内部子控件用 grid 管理，必须调 grid_propagate(False)。
+        mono_font = tkfont.Font(family="Consolas", size=9)
+        hex_w = max(mono_font.measure("0" * 32) + 8, 150)  # 32 位序列号的像素宽度
+        label_w = tkfont.nametofont("TkDefaultFont").measure("产品 ID")
+        detail_w = label_w + 10 + hex_w + 24  # 标签列 + 间隔 + 值列 + 面板 padding
+        detail = ttk.LabelFrame(body, text="设备详情", padding=(12, 10), width=detail_w, height=400)
         detail.pack(side="right", fill="y", padx=(10, 0))
         detail.grid_propagate(False)
         detail.pack_propagate(False)
-        detail.grid_columnconfigure(1, weight=1, minsize=150)
+        detail.grid_columnconfigure(1, weight=1, minsize=hex_w)
         self._detail_vars: dict[str, tk.StringVar] = {}
         self._detail_status_lbl: ttk.Label | None = None
-        for row, (key, label) in enumerate(
-            (
-                ("name", "名称"),
-                ("kind", "类型"),
-                ("slot", "槽位"),
-                ("serial", "序列号"),
-                ("wpid", "产品 ID"),
-                ("status", "连接"),
-            )
-        ):
+        detail_rows = (
+            ("name", "名称"),
+            ("kind", "类型"),
+            ("slot", "槽位"),
+            ("serial", "序列号"),
+            ("wpid", "产品 ID"),
+            ("status", "连接"),
+        )
+        for row, (key, label) in enumerate(detail_rows):
+            # 6 行均分面板高度，窗口拉高时是行距变松而不是底部堆一大片空白
+            detail.grid_rowconfigure(row, weight=1)
             ttk.Label(detail, text=label, foreground="#777").grid(
-                row=row, column=0, sticky="nw", padx=(0, 10), pady=(0, 10)
+                row=row, column=0, sticky="nw", padx=(0, 10)
             )
             var = tk.StringVar(value="—")
             self._detail_vars[key] = var
@@ -495,12 +502,12 @@ class App:
             lbl = ttk.Label(
                 detail,
                 textvariable=var,
-                wraplength=130,
+                wraplength=hex_w,
                 justify="left",
                 anchor="nw",
-                font=("Consolas", 9) if mono else None,
+                font=mono_font if mono else None,
             )
-            lbl.grid(row=row, column=1, sticky="new", pady=(0, 10))
+            lbl.grid(row=row, column=1, sticky="new")
             if key == "status":
                 self._detail_status_lbl = lbl
 
@@ -508,12 +515,20 @@ class App:
         tree_wrap.pack(side="left", fill="both", expand=True)
         cols = ("slot", "name", "kind", "serial", "online")
         headers = ("槽位", "设备名称", "类型", "序列号", "状态")
-        widths = (56, 230, 70, 150, 60)
+        widths = (56, 240, 76, 168, 64)
         self.tree = ttk.Treeview(tree_wrap, columns=cols, show="headings", height=9, selectmode="browse")
         for c, h, w in zip(cols, headers, widths, strict=True):
             self.tree.heading(c, text=h)
-            self.tree.column(c, width=w, minwidth=44, anchor="center" if c in ("slot", "kind", "online") else "w")
+            self.tree.column(
+                c,
+                width=w,
+                minwidth=44,
+                # 名称列吸收多余宽度（窗口变宽时优先给设备名，而不是留白）
+                stretch=(c == "name"),
+                anchor="center" if c in ("slot", "kind", "online") else "w",
+            )
         self.tree.tag_configure("offline", foreground="#999")
+        self.tree.tag_configure("odd", background="#f7f7f8")  # 斑马纹：长列表更好扫读
         scroll = ttk.Scrollbar(tree_wrap, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -521,6 +536,10 @@ class App:
         self.tree.bind("<Double-1>", lambda _e: self.on_unpair())
         self.tree.bind("<<TreeviewSelect>>", lambda _e: self._show_detail())
         self.tree.bind("<Delete>", lambda _e: self.on_unpair())
+        self.tree.bind("<Control-c>", lambda _e: self.on_copy())
+        self.tree.bind("<Button-3>", self._show_context_menu)
+        self.root.bind("<F5>", lambda _e: self.refresh())
+        self._build_context_menu()
 
         # 工具栏
         bar = ttk.Frame(outer)
@@ -543,12 +562,34 @@ class App:
         ttk.Label(bar, text="自动刷新").pack(side="right")
 
     # ---------------- 设置 / 窗口状态 ----------------
+    def _build_context_menu(self) -> None:
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="复制此设备信息", command=self.on_copy)
+        menu.add_command(label="解除配对", command=self.on_unpair)
+        menu.add_separator()
+        menu.add_command(label="刷新", command=self.refresh)
+        self._ctx_menu = menu
+
+    def _show_context_menu(self, event) -> None:
+        row = self.tree.identify_row(event.y)
+        if row:  # 右键落在某一行上：先选中它，让菜单操作有明确目标
+            self.tree.selection_set(row)
+            self.tree.focus(row)
+        try:
+            self._ctx_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._ctx_menu.grab_release()
+
     def _apply_geometry(self) -> None:
         s = self._ui_scale
         min_w, min_h = round(MIN_WINDOW[0] * s), round(MIN_WINDOW[1] * s)
         self.root.minsize(min_w, min_h)
         geometry = str(self.settings.get("geometry") or "")
         safe = self._safe_geometry(geometry, min_w, min_h)
+        if re.fullmatch(r"\d+x\d+", safe):
+            # 没有可用位置（首次启动/位置失效）：居中显示，而不是贴在左上角
+            w, h = (int(v) for v in safe.split("x"))
+            safe = f"{w}x{h}+{max((self.root.winfo_screenwidth() - w) // 2, 0)}+{max((self.root.winfo_screenheight() - h) // 3, 0)}"
         try:
             self.root.geometry(safe)
         except tk.TclError:
@@ -615,7 +656,8 @@ class App:
         self.set_status("正在结束冲突进程…")
         self.run_bg(core.kill_conflicting_processes, "kill_conflicts")
 
-    def _finish_kill_conflicts(self, killed: list[str], remaining: list[str]) -> None:
+    def _finish_kill_conflicts(self, payload) -> None:
+        killed, remaining, stopped, failed_services = payload
         self.btn_kill_conflicts.config(state="normal")
         if remaining:
             names = ", ".join(remaining[:3]) + ("…" if len(remaining) > 3 else "")
@@ -623,7 +665,11 @@ class App:
             self._warn_conflicts()
             return
         self._warn_conflicts()
-        self.set_status(f"已结束 {len(killed)} 个冲突进程 ✔ 正在重新读取接收器…")
+        svc = f"，已停止服务 {', '.join(stopped)}" if stopped else ""
+        hint = ""
+        if failed_services:
+            hint = "（注意：官方后台服务未能停止，进程可能稍后自动重启；以管理员身份运行本程序可彻底停止）"
+        self.set_status(f"已结束 {len(killed)} 个冲突进程{svc} ✔ {hint}正在重新读取接收器…")
         self.refresh(quiet=True)
 
     def on_auto_changed(self) -> None:
@@ -691,7 +737,10 @@ class App:
         try:
             while True:
                 tag, ok, payload = self.q.get_nowait()
-                self._set_busy(False)
+                # 配对进度是中间消息，不能解 busy——否则配对中按钮会被重新启用，
+                # 用户能再点刷新/配对，与正在进行的配对抢接收器
+                if tag != "pair_progress":
+                    self._set_busy(False)
                 if tag == "refresh":
                     if ok:
                         choices, result = payload
@@ -699,7 +748,9 @@ class App:
                         if isinstance(result, core.ReceiverInfo):
                             self._render(result)
                             stamp = time.strftime("%H:%M:%S")
-                            self.set_status(f"共 {len(result.devices)} 台配对设备 · 最后刷新 {stamp}")
+                            self.set_status(
+                                f"{result.name}：共 {len(result.devices)} 台配对设备 · 最后刷新 {stamp}"
+                            )
                         else:
                             # 快照失败但列表有效：照常更新下拉框，用户可切换到别的接收器
                             self._render_failure(str(result))
@@ -708,7 +759,7 @@ class App:
                     # 每次刷新后重查冲突进程（用户可能中途启动/退出了 Options+）
                     self._warn_conflicts()
                 elif tag == "kill_conflicts":
-                    self._finish_kill_conflicts(payload[0], payload[1])
+                    self._finish_kill_conflicts(payload)
                 elif tag == "pair_progress":
                     self._update_pair_dialog(payload)
                 elif tag == "pair":
@@ -737,16 +788,22 @@ class App:
 
         keep = self.selected_slot()
         self.tree.delete(*self.tree.get_children())
-        for d in info.devices:
-            tags = () if d.online is not False else ("offline",)
+        for idx, d in enumerate(info.devices):
+            tags: list[str] = []
+            if idx % 2:
+                tags.append("odd")
+            if d.online is False:
+                tags.append("offline")
             iid = str(d.slot)
             self.tree.insert(
                 "",
                 "end",
                 iid=iid,
                 values=(d.slot, d.name, d.kind_label, d.serial or "-", d.status_label),
-                tags=tags,
+                tags=tuple(tags),
             )
+        if not info.devices:
+            self.var_sub.set(self.var_sub.get() + "　·　暂无配对设备，可点「添加设备…」")
         if keep is not None and self.tree.exists(str(keep)):
             self.tree.selection_set(str(keep))
             self.tree.see(str(keep))
@@ -808,8 +865,14 @@ class App:
             self.set_status("正在读取接收器…")
 
         def payload():
-            # 接收器列表即使快照失败也要带回来（比如另一个接收器坏了，还能切换）
-            choices = core.list_receivers()
+            # 接收器列表即使快照失败也要带回来（比如另一个接收器坏了，还能切换）。
+            # 列表缓存 3 秒：切换/自动刷新时跳过枚举（约 0.2~0.5s），插拔设备最迟 3 秒后被感知
+            if time.monotonic() - self._recv_choices_at < 3.0 and self._recv_choices:
+                choices = self._recv_choices
+            else:
+                choices = core.list_receivers()
+                self._recv_choices = choices
+                self._recv_choices_at = time.monotonic()
             try:
                 return choices, core.snapshot(self._recv_path)
             except core.BoltError as exc:
@@ -819,8 +882,15 @@ class App:
 
     def _on_recv_selected(self, _event=None) -> None:
         idx = self.cb_recv.current()
+        if self.busy:
+            # 后台还在读，切了也不会生效——回退到当前显示项，避免界面与数据不一致
+            self.cb_recv.current(self._recv_combo_index)
+            return
         if 0 <= idx < len(self._recv_choices):
             self._recv_path = self._recv_choices[idx].path
+            # 立即清空旧列表给出反馈，避免看起来像"没反应"
+            self.tree.delete(*self.tree.get_children())
+            self.set_status(f"正在读取 {self._recv_choices[idx].name} …")
             self.refresh(quiet=True)
 
     def _update_recv_choices(self, choices: list[core.ReceiverChoice]) -> None:
@@ -846,8 +916,11 @@ class App:
             self._recv_path = choices[0].path if choices else None
             if choices:
                 self.cb_recv.current(0)
+        self._recv_combo_index = self.cb_recv.current() if self.cb_recv.current() >= 0 else 0
 
     def on_unpair(self) -> None:
+        if self.busy:
+            return
         slot = self.selected_slot()
         if slot is None:
             messagebox.showinfo("提示", "请先在列表中选择要解除配对的设备。", parent=self.root)
@@ -862,8 +935,6 @@ class App:
             parent=self.root,
             icon="warning",
         ):
-            return
-        if self.busy:
             return
         self._set_busy(True)
         self.set_status(f"正在解除槽位 {slot} 的配对…")
@@ -898,7 +969,10 @@ class App:
         )
         bar = ttk.Frame(frame)
         bar.pack(fill="x", pady=(14, 0))
-        ttk.Button(bar, text="取消", width=10, command=self._cancel_pair).pack(side="right")
+        self._pair_cancel_btn = ttk.Button(bar, text="取消", width=10, command=self._cancel_pair)
+        self._pair_cancel_btn.pack(side="right")
+        # 点窗口 X 等同取消，否则对话框关了配对线程仍会空跑到超时
+        dialog.protocol("WM_DELETE_WINDOW", self._cancel_pair)
 
         self._set_busy(True)
         self.set_status("配对进行中，请在设备上操作…")
@@ -930,8 +1004,13 @@ class App:
                 self.var_pair_step.set(f"发现设备：{self._pair_name or '新设备'}，按提示完成认证")
 
     def _cancel_pair(self) -> None:
-        if getattr(self, "_pair_cancel", None):
+        if getattr(self, "_pair_cancel", None) and not self._pair_cancel.is_set():
             self._pair_cancel.set()
+            self.var_pair_step.set("正在取消配对…")
+            self.var_pair_detail.set("")
+            btn = getattr(self, "_pair_cancel_btn", None)
+            if btn is not None:
+                btn.config(state="disabled")
 
     def _finish_pair(self, ok: bool, payload) -> None:
         cancelled = bool(getattr(self, "_pair_cancel", None) and self._pair_cancel.is_set())
@@ -956,13 +1035,20 @@ class App:
             self.set_status("配对失败。")
 
     def on_copy(self) -> None:
+        """复制：有选中行时只复制该设备，否则复制整张表（TSV，可直接粘进 Excel）。"""
         if not self.info or not self.info.devices:
             self.set_status("没有可复制的设备。")
             return
-        text = core.to_tsv(self.info.devices)
+        slot = self.selected_slot()
+        picked = [d for d in self.info.devices if d.slot == slot] if slot is not None else []
+        rows = picked or self.info.devices
+        text = core.to_tsv(rows)
         self.root.clipboard_clear()
         self.root.clipboard_append(text)
-        self.set_status(f"已复制 {len(self.info.devices)} 行到剪贴板。")
+        if picked:
+            self.set_status(f"已复制槽位 {slot}「{picked[0].name}」的信息到剪贴板。")
+        else:
+            self.set_status(f"已复制 {len(rows)} 行到剪贴板。")
 
     def on_export(self) -> None:
         if not self.info or not self.info.devices:
