@@ -5,15 +5,16 @@
 ![python](https://img.shields.io/badge/python-3.10%2B-3776ab)
 ![solaar](https://img.shields.io/badge/solaar-1.1.20-informational)
 
-**Windows 上的罗技接收器小工具**：读取接收器里已配对的设备清单、解除配对、配对新设备。
-支持 Bolt / 优联 Unifying / Lightspeed 接收器（Nano 只读），底层复用
+**Windows 上的罗技接收器小工具**：管理罗技无线接收器上的设备——查看已配对清单、
+在线状态与电量、解除配对、配对新设备。同时支持多接收器插拔切换，覆盖
+**Bolt / 优联 Unifying / Lightspeed**（Nano 只读）。底层复用
 [Solaar](https://github.com/pwr-Solaar/Solaar) 的 HID++ 协议实现，并为 Windows 的 HID 传输层打了补丁。
 
 > **English**: A small Windows GUI/CLI to list, unpair and pair devices on Logitech receivers
 > (Bolt `046D:C548`, Unifying `C52B`/`C532`, Lightspeed `C539`; Nano is read-only). Solaar 1.1.20 already
 > speaks the protocols, but its HID layer assumes one handle can send both short and long HID++ reports —
 > which Windows forbids for the Bolt receiver. This project ships the minimal fix
-> (`patches/`, 4 files, +138/−3 lines) plus a tkinter front-end.
+> (`patches/`, 3 files, +170/−2 lines) plus a tkinter front-end.
 
 ![界面截图](docs/screenshot.png)
 
@@ -32,14 +33,21 @@ Solaar 能干这些事，但它官方只支持 Linux；在 Windows 上直接装�
 ## 功能
 
 - 支持 4 类接收器：**Bolt**、**优联 Unifying**、**Lightspeed**（列表/解配对/配对）、**Nano**（列表/替换式配对，协议不允许解配对）
-- 列出接收器上所有配对设备：槽位、名称、类型（键盘/鼠标…）、序列号、产品 ID (WPID)、在线状态
+- **多接收器同时管理**：可同时插多个接收器，GUI 下拉切换、CLI `--receivers` / `--receiver N` 指定
+- 列出接收器上所有配对设备：槽位、名称、类型、序列号、产品 ID (WPID)
+- **在线状态真实探测**：对每台设备发协议 ping——设备连在别的电脑上时会正确显示「离线」，
+  而不是像一般实现那样永远"在线"
+- **电量显示**：百分比 + 充放电状态（HID++ 1.0/2.0 双协议），表格列与详情面板同步展示
 - 解除指定设备的配对（写配对寄存器，不动设备本身，之后可重新配对）
-- **配对新设备**：Bolt 走"发现 → 认证（passkey）"流程，Unifying/Nano 走开锁流程（GUI 向导或 `--pair`）
+- **配对新设备**：Bolt 走"发现 → 认证（passkey）"流程，Unifying/Nano 走开锁流程；
+  配对确认后即时反馈，读取设备信息期间不再"假死"（GUI 向导或 `--pair`）
 - 显示接收器信息：型号、序列号、已配对数量/上限、剩余可配对数
-- 检测 Logi Options+ 等官方软件是否在运行（它们可能独占接收器）
-- GUI：设备详情面板、复制到剪贴板、导出 CSV、自动刷新、高 DPI、窗口位置记忆、单实例保护
-- 命令行模式：`--list` / `--info` / `--unpair` / `--pair` / `--watch`，全程支持 `--json`
-- 打包成单目录 exe，目标机器不需要装 Python
+- **检测并一键结束 Logi Options+** 等独占接收器的官方软件（含停止
+  `OptionsPlusUpdaterService` 自启服务，防止结束后复活）
+- GUI：设备详情面板、右键菜单、复制到剪贴板、导出 CSV/TSV、F5 刷新、斑马纹列表、
+  高 DPI、窗口位置记忆、单实例保护
+- 命令行模式：`--receivers` / `--list` / `--info` / `--unpair` / `--pair` / `--watch`，全程支持 `--json`
+- **打包成单文件 exe**（约 14 MB，带启动闪屏），目标机器不需要装 Python
 
 ## 快速开始
 
