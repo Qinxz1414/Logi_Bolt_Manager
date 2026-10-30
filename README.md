@@ -45,11 +45,13 @@ Solaar 能干这些事，但它官方只支持 Linux；在 Windows 上直接装�
 
 ### 方式一：用现成的 exe（普通用户）
 
-1. 从 [Releases](../../releases) 下载 `BoltManager-<version>-win64.zip`
-2. 解压到任意目录（**必须整个文件夹一起**，`BoltManager.exe` 依赖同目录的 `_internal/`）
-3. 双击 `BoltManager.exe`，插着 Bolt 接收器即可看到设备列表
+1. 从 [Releases](../../releases) 下载 `BoltManager-<version>-win64.exe`
+2. 双击运行，插着 Bolt 接收器即可看到设备列表
 
-> 首次运行若被 SmartScreen 拦下：这是未签名的开源程序，点"更多信息 → 仍要运行"。
+> 单文件免安装：整个程序就一个 exe，拷到哪都能用。
+> 启动时闪屏停留 3~6 秒属正常——单文件模式要先自解压，之后就是常规速度。
+
+首次运行若被 SmartScreen 拦下：这是未签名的开源程序，点"更多信息 → 仍要运行"。
 
 ### 方式二：从源码运行（开发者）
 
@@ -148,11 +150,12 @@ logi-bolt-manager/
 │  ├─ fetch_hidapi.py        # 下载官方 hidapi.dll（sha256 校验）
 │  ├─ verify_patches.py      # 无硬件自检（CI 用）
 │  ├─ rebuild.cmd            # 一键打包 exe
+│  ├─ make_splash.py         # 重新生成启动闪屏图 src/splash.png
 │  └─ solaar-cli.cmd         # 直接调用 solaar CLI，排查用
 ├─ docs/
 │  ├─ 技术说明.md            # 根因分析、补丁逐条讲解、升级清单
 │  └─ screenshot.png
-├─ dist/BoltManager/         # 打包产物（不入库）
+├─ dist/BoltManager.exe      # 打包产物：单文件 exe（不入库）
 ├─ LICENSE                   # GPL-2.0
 └─ THIRD-PARTY-NOTICES.md    # 第三方组件与许可
 ```
@@ -163,7 +166,7 @@ logi-bolt-manager/
 pip install --no-deps solaar==1.1.20
 pip install -r requirements-dev.txt
 python tools\apply_patches.py             :: 应用补丁
-tools\rebuild.cmd                          :: 自动下载 hidapi.dll 并打包 → dist\BoltManager
+tools\rebuild.cmd                          :: 自动下载 hidapi.dll 并打包 → dist\BoltManager.exe（单文件）
 ```
 
 `src\BoltManager.spec` 按优先级查找 `hidapi.dll`：环境变量 `HIDAPI_DLL` → `build/hidapi/`（fetch 脚本产物）
@@ -242,7 +245,7 @@ python tools\apply_patches.py --revert    :: 逐字节还原成上游原样
 `USB 输入设备` 下存在 `MI_02` 接口。
 
 **exe 换台机器打不开？**
-只拷了 exe。必须连 `_internal/` 目录一起拷。
+旧版本（v1.5.x 及更早）是目录形式，必须连 `_internal/` 一起拷；v1.6.0 起为单文件，只有一个 exe。
 
 **解除配对失败？**
 先退出 Logi Options+ / Logi Tune；再确认没有别的程序（GHUB、LGSTrayEx 等 HID++ 客户端）在占用。

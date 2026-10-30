@@ -3,6 +3,25 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与
 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.6.0] - 2026-10-30
+
+### Changed
+
+- **打包形态改为单文件 exe**：`dist\BoltManager.exe` 一个文件即可分发，
+  不再需要连同 `_internal/` 目录一起拷贝；Release 附件从 zip 换成裸 exe
+- 新增启动闪屏：单文件模式自解压期间（约 3~6 秒）显示品牌等待画面，
+  窗口就绪后自动关闭（`tools/make_splash.py` 可重新生成闪屏图）
+
+### Fixed
+
+- 单文件模式下 hidapi.dll 加载：把 PyInstaller 解压目录
+  （`sys._MEIPASS`）显式登记进 DLL 搜索路径
+
+### 说明
+
+- 单文件代价：每次启动需自解压（约 3~6 秒，有闪屏反馈），冷启动慢于目录版；
+  如需最快启动可将 spec 切回 one-folder（见 `src/BoltManager.spec` 顶部注释）
+
 ## [1.5.1] - 2026-10-30
 
 ### 修复

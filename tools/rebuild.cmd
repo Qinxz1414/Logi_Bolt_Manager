@@ -7,8 +7,8 @@ rem  前置条件：
 rem    1) PATH 里的 python 已装 requirements-dev.txt 里的依赖
 rem    2) 补丁已应用：tools\apply_patches.cmd
 rem
-rem  产物：dist\BoltManager\BoltManager.exe
-rem        这是 one-folder 形式，必须连同同目录的 _internal 一起分发
+rem  产物：dist\BoltManager.exe
+rem        单文件形式，拷走这一个 exe 就能直接用（无需 _internal 目录）
 rem ============================================================
 setlocal
 
@@ -46,5 +46,5 @@ if errorlevel 1 (
 )
 
 echo.
-echo [OK] %CD%\dist\BoltManager\BoltManager.exe
+echo [OK] %CD%\dist\BoltManager.exe
 endlocal

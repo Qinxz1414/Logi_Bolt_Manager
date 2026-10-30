@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.5.1"
+__version__ = "1.6.0"
 
 import argparse
 import json
@@ -1108,6 +1108,22 @@ class App:
         self.root.destroy()
 
 
+def _close_splash() -> None:
+    """关掉 PyInstaller 单文件模式的启动闪屏。
+
+    闪屏只在打包产物里存在（bootloader 解压期间显示），源码运行没有 pyi_splash
+    模块，直接跳过。窗口就绪前不关：否则解压没完成用户就面对空白桌面。
+    """
+    try:
+        import pyi_splash  # type: ignore[import-not-found]
+    except ImportError:
+        return
+    try:
+        pyi_splash.close()
+    except Exception:  # noqa: BLE001 - 闪屏关闭失败不值得影响主流程
+        pass
+
+
 def _gui() -> int:
     _enable_high_dpi()
 
@@ -1118,6 +1134,7 @@ def _gui() -> int:
             "两个实例同时读写接收器会互相打断，请先关闭正在运行的那个。",
             "BoltManager 已在运行",
         )
+        _close_splash()  # 提前退出也不能把闪屏留在屏幕上
         return 1
 
     root = tk.Tk()
@@ -1130,6 +1147,8 @@ def _gui() -> int:
     style.configure("Treeview", rowheight=28)
     style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"))
     App(root, settings)
+    root.update_idletasks()  # 先让首帧真正画出来，再收掉闪屏
+    _close_splash()
     root.mainloop()
     return 0
 
@@ -1163,6 +1182,7 @@ def main(argv: list[str] | None = None) -> int:
 
     rc = _cli(argv)
     if rc >= 0:
+        _close_splash()  # 命令行模式也会先弹闪屏，用完即收
         return rc
     return _gui()
 

@@ -1,11 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller 打包配置：Logi Bolt 接收器管理器（单目录发布）
+"""PyInstaller 打包配置：Logi Bolt 接收器管理器（单文件发布）
 
 用法（在项目根目录执行）：
     python -m PyInstaller --noconfirm --clean src\\BoltManager.spec
 
 产物：
-    dist\\BoltManager\\BoltManager.exe  （one-folder 形式，必须连同 _internal 一起分发）
+    dist\\BoltManager.exe  （one-file 形式，单个可执行文件，直接分发）
+
+one-file 与 one-folder 的取舍：
+    + 只有一个 exe，拷走/上传/发给别人都不会漏 _internal
+    - 每次启动要把内置资源解压到 %TEMP%\\_MEIxxxx，冷启动慢 1~3 秒
+    - 体积略大（不再是 34MB 目录，而是约 15~20MB 单文件）
+    - 部分杀软对"单文件自解压"更敏感，偶发误报
+
+若更在意启动速度，把下面 EXE(...) 的 a.binaries/a.datas 改成 []、
+exclude_binaries=True，并恢复文件末尾的 COLLECT(...) 即可切回 one-folder。
 
 路径全部由 SPECPATH 推导，不再硬编码 Python 安装目录，
 换机器或换 Python 小版本都不需要改这个文件。
@@ -77,16 +86,28 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# 启动闪屏：单文件模式解压期间（约 2~4 秒）给用户"在加载"的反馈，
+# 应用侧在窗口就绪后调 pyi_splash.close() 关掉它（见 bolt_manager._close_splash）
+SPLASH_PNG = os.path.join(SRC_DIR, "splash.png")
+splash = Splash(SPLASH_PNG, binaries=a.binaries, datas=a.datas, always_on_top=False) if os.path.isfile(SPLASH_PNG) else None
+
+_exe_head = [pyz, a.scripts]
+if splash is not None:
+    _exe_head += [splash, splash.binaries]
+
 exe = EXE(
-    pyz,
-    a.scripts,
+    *_exe_head,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
+    exclude_binaries=False,  # one-file：二进制与数据一起塞进 exe
     name="BoltManager",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -94,13 +115,4 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=[os.path.join(SRC_DIR, "bolt.ico")],
-)
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name="BoltManager",
 )

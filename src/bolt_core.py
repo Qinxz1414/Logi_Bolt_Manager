@@ -48,19 +48,28 @@ _KIND_LABELS = {
 # 启动期环境准备
 # --------------------------------------------------------------------------- #
 def _prepare_dll_search_path() -> None:
-    """让 ctypes 能找到 build/hidapi/hidapi.dll（tools/fetch_hidapi.py 的产物）。
+    """让 ctypes 能找到 hidapi.dll。
 
-    打包后的 exe 里 DLL 就在 _internal/，走应用目录搜索，无需此处理。
-    注意：Python 3.8+ 的 ctypes 默认安全加载模式不查 PATH，必须 add_dll_directory。
+    三个来源：
+      1) 单文件 exe：hidapi.dll 被解压到 sys._MEIPASS，必须显式登记该目录
+         （ctypes 自 Python 3.8 起不再查 PATH，裸名 LoadLibrary 找不到文件）
+      2) 单目录 exe：DLL 在 exe 同级/_internal，bootloader 已登记，无需处理
+      3) 源码运行：build/hidapi/ 下是 tools/fetch_hidapi.py 的产物
     """
-    dll_dir = Path(__file__).resolve().parents[1] / "build" / "hidapi"
-    if not dll_dir.is_dir():
-        return
-    os.environ["PATH"] = str(dll_dir) + os.pathsep + os.environ.get("PATH", "")
-    try:
-        os.add_dll_directory(str(dll_dir))
-    except (AttributeError, OSError):  # 非 Windows 或目录不可用
-        pass
+    candidates: list[Path] = []
+    bundle = getattr(sys, "_MEIPASS", None)
+    if bundle:
+        candidates.append(Path(bundle))
+    candidates.append(Path(__file__).resolve().parents[1] / "build" / "hidapi")
+
+    for dll_dir in candidates:
+        if not dll_dir.is_dir():
+            continue
+        os.environ["PATH"] = str(dll_dir) + os.pathsep + os.environ.get("PATH", "")
+        try:
+            os.add_dll_directory(str(dll_dir))
+        except (AttributeError, OSError):  # 非 Windows 或目录不可用
+            pass
 
 
 _GI_STUB_INSTALLED = False
