@@ -153,13 +153,20 @@ def test_display_width_counts_cjk_as_two():
 
 
 def test_to_csv_and_tsv():
-    devices = [DeviceInfo(slot=3, name="K98M Plus", serial="S3", wpid="B3A1", kind="keyboard", online=True)]
+    devices = [
+        DeviceInfo(slot=3, name="K98M Plus", serial="S3", wpid="B3A1", kind="keyboard", online=True, battery="85%（放电中）")
+    ]
     csv_text = core.to_csv(devices)
-    assert csv_text.splitlines()[0] == "槽位,设备名称,类型,序列号,产品ID,状态"
-    assert csv_text.splitlines()[1] == "3,K98M Plus,键盘,S3,B3A1,在线"
+    assert csv_text.splitlines()[0] == "槽位,设备名称,类型,序列号,产品ID,电量,状态"
+    assert csv_text.splitlines()[1] == "3,K98M Plus,键盘,S3,B3A1,85%（放电中）,在线"
 
     tsv = core.to_tsv(devices)
-    assert tsv.splitlines()[0].split("\t") == ["槽位", "设备名称", "类型", "序列号", "状态"]
+    assert tsv.splitlines()[0].split("\t") == ["槽位", "设备名称", "类型", "序列号", "电量", "状态"]
+
+    # 电量缺失时导出为空/占位，不报错
+    no_batt = [DeviceInfo(slot=1, name="a", online=False)]
+    assert core.to_csv(no_batt).splitlines()[1].endswith(",,离线")
+    assert core.to_tsv(no_batt).splitlines()[1].endswith("-\t离线")
 
 
 def test_to_json_ok_and_error():
@@ -301,7 +308,13 @@ def test_pairing_emits_confirming_before_device_registration(monkeypatch):
 
     pairing = _FakePairing()
     new_device = types.SimpleNamespace(
-        number=7, name="K98M", serial="SN0001", wpid="B35C", online=True, kind=None
+        number=7,
+        name="K98M",
+        serial="SN0001",
+        wpid="B35C",
+        online=True,
+        kind=None,
+        ping=lambda: None,  # _device_info 会实际探测在线状态
     )
 
     class FakeBoltReceiver:
@@ -370,3 +383,76 @@ def test_pairing_emits_confirming_before_device_registration(monkeypatch):
 def test_pair_event_text_confirming():
     text = core.pair_event_text("confirming", {})
     assert text and "配对已确认" in text
+
+
+# --------------------------------------------------------------------------- #
+# 在线探测与电量
+# --------------------------------------------------------------------------- #
+def test_device_info_pings_for_online_and_battery():
+    """在线状态必须 ping 探测；电量来自 device.battery() 并格式化为中文。"""
+    import types
+
+    from logitech_receiver import common
+
+    dev = types.SimpleNamespace(
+        number=1,
+        name="MX Master 3S",
+        serial="SN",
+        wpid="B035",
+        online=True,
+        kind="mouse",
+        ping=lambda: None,
+        battery=lambda: common.Battery(85, None, common.BatteryStatus.DISCHARGING, None),
+    )
+    info = core._device_info(dev)
+    assert info.online is True
+    assert info.status_label == "在线"
+    assert info.battery == "85%（放电中）"
+
+
+def test_device_info_offline_when_device_linked_elsewhere():
+    """设备连在别的电脑上：ping 正常返回但置 online=False，电量不读。"""
+    import types
+
+    dev = types.SimpleNamespace(
+        number=2, name="K98M", serial=None, wpid=None, kind=None, online=True, ping=None, battery=None
+    )
+
+    def ping():
+        dev.online = False  # 模拟接收器探测不到设备
+
+    dev.ping = ping
+    info = core._device_info(dev)
+    assert info.online is False
+    assert info.status_label == "离线"
+    assert info.battery is None
+
+
+def test_device_info_ping_crash_falls_back_to_unknown():
+    import types
+
+    def boom():
+        raise RuntimeError("driver exploded")
+
+    dev = types.SimpleNamespace(
+        number=3, name="X", serial=None, wpid=None, kind=None, online=True, ping=boom, battery=boom
+    )
+    info = core._device_info(dev)
+    assert info.online is None
+    assert info.status_label == "未知"
+    assert info.battery is None
+
+
+def test_battery_text_levels():
+    import types
+
+    from logitech_receiver import common
+
+    # 档位型电量（HID++ 1.0）
+    batt = common.Battery(common.BatteryLevelApproximation.GOOD, None, common.BatteryStatus.RECHARGING, None)
+    d = types.SimpleNamespace(battery=lambda: batt)
+    assert core._battery_text_of(d) == "良好（充电中）"
+
+    # 读不出电量
+    assert core._battery_text_of(types.SimpleNamespace(battery=lambda: None)) is None
+    assert core._battery_text_of(types.SimpleNamespace(battery=lambda: (_ for _ in ()).throw(OSError()))) is None

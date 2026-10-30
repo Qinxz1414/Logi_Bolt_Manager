@@ -184,6 +184,7 @@ class DeviceInfo:
     wpid: str | None = None
     kind: str | None = None
     online: bool | None = None  # None = 状态读不出来
+    battery: str | None = None  # 电量描述，如 "85%（放电中）"；离线或读不出为 None
 
     @property
     def kind_label(self) -> str:
@@ -426,11 +427,15 @@ def _clean(value) -> str | None:
 def _device_info(d) -> DeviceInfo:
     """把 solaar 的 Device 对象整理成 DeviceInfo（容错一切读不出的字段）。"""
     slot = int(getattr(d, "number", 0))
-    online: bool | None
+    # 在线状态必须实际探测：设备枚举时 online 默认 True，但设备可能此刻连在
+    # 其他电脑上（Easy-Switch / 配对在别的接收器），缓存标志会骗人。
+    # ping 会真正向设备发协议请求并更新 d.online；ping 的协议版本顺带缓存。
     try:
-        online = bool(d.online)
-    except Exception:  # noqa: BLE001 - 设备状态读取可能因驱动/占用而任意报错
+        d.ping()
+        online: bool | None = bool(d.online)
+    except Exception:  # noqa: BLE001 - ping 可能因驱动/占用/NoSuchDevice 任意失败
         online = None
+    battery = _battery_text_of(d) if online else None
     return DeviceInfo(
         slot=slot,
         # 接收器返回的名字带定长填充，去掉尾部空格
@@ -439,7 +444,54 @@ def _device_info(d) -> DeviceInfo:
         wpid=_clean(getattr(d, "wpid", None)),
         kind=_kind_of(d),
         online=online,
+        battery=battery,
     )
+
+
+_BATTERY_LEVEL_LABELS = {
+    "EMPTY": "空",
+    "CRITICAL": "极低",
+    "LOW": "偏低",
+    "GOOD": "良好",
+    "FULL": "满",
+}
+_BATTERY_STATUS_LABELS = {
+    "DISCHARGING": "放电中",
+    "RECHARGING": "充电中",
+    "ALMOST_FULL": "即将充满",
+    "FULL": "已充满",
+    "SLOW_RECHARGE": "慢速充电",
+    "INVALID_BATTERY": "电池异常",
+    "THERMAL_ERROR": "温度异常",
+}
+
+
+def _battery_text_of(d) -> str | None:
+    """读取设备电量并格式化为面向用户的描述；读不出返回 None。"""
+    from logitech_receiver import common
+
+    try:
+        batt = d.battery()
+    except Exception:  # noqa: BLE001 - 电量读取失败不影响设备列表展示
+        return None
+    if batt is None:
+        return None
+    if not hasattr(batt, "status"):  # 兼容旧版返回的 (level, next, status, voltage) 元组
+        try:
+            batt = common.Battery(*tuple(batt)[:4])
+        except Exception:  # noqa: BLE001
+            return None
+    level = batt.level
+    if isinstance(level, common.BatteryLevelApproximation):
+        level_text = _BATTERY_LEVEL_LABELS.get(level.name, level.name.lower())
+    elif isinstance(level, int):
+        level_text = f"{level}%"
+    else:
+        return None
+    status = batt.status
+    status_name = getattr(status, "name", None)
+    status_text = _BATTERY_STATUS_LABELS.get(status_name, "")
+    return f"{level_text}（{status_text}）" if status_text else level_text
 
 
 def _kind_of(device) -> str | None:
@@ -725,13 +777,14 @@ def format_devices(devices: list[DeviceInfo]) -> str:
     if not devices:
         return "接收器上没有已配对的设备。"
     rows = [
-        (f"槽位{d.slot}", d.name, d.kind_label, f"序列号={d.serial or '-'}", d.status_label) for d in devices
+        (f"槽位{d.slot}", d.name, d.kind_label, f"序列号={d.serial or '-'}", d.battery or "-", d.status_label)
+        for d in devices
     ]
-    widths = [max(_display_width(row[i]) for row in rows) for i in range(4)]
+    widths = [max(_display_width(row[i]) for row in rows) for i in range(5)]
     lines = []
     for row in rows:
-        cells = [_pad(row[i], widths[i]) for i in range(4)]
-        lines.append("  ".join(cells) + "  " + row[4])
+        cells = [_pad(row[i], widths[i]) for i in range(5)]
+        lines.append("  ".join(cells) + "  " + row[5])
     return "\n".join(lines)
 
 
@@ -756,16 +809,19 @@ def to_json(info: ReceiverInfo, *, ok: bool = True, error: str | None = None) ->
 def to_csv(devices: list[DeviceInfo]) -> str:
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")
-    writer.writerow(["槽位", "设备名称", "类型", "序列号", "产品ID", "状态"])
+    writer.writerow(["槽位", "设备名称", "类型", "序列号", "产品ID", "电量", "状态"])
     for d in devices:
-        writer.writerow([d.slot, d.name, d.kind_label, d.serial or "", d.wpid or "", d.status_label])
+        writer.writerow([d.slot, d.name, d.kind_label, d.serial or "", d.wpid or "", d.battery or "", d.status_label])
     return buf.getvalue()
 
 
 def to_tsv(devices: list[DeviceInfo]) -> str:
     """制表符分隔，适合直接粘进 Excel / 聊天窗口。"""
-    lines = ["槽位\t设备名称\t类型\t序列号\t状态"]
-    lines += [f"{d.slot}\t{d.name}\t{d.kind_label}\t{d.serial or '-'}\t{d.status_label}" for d in devices]
+    lines = ["槽位\t设备名称\t类型\t序列号\t电量\t状态"]
+    lines += [
+        f"{d.slot}\t{d.name}\t{d.kind_label}\t{d.serial or '-'}\t{d.battery or '-'}\t{d.status_label}"
+        for d in devices
+    ]
     return "\n".join(lines)
 
 

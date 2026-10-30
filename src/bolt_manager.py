@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.4.3"
+__version__ = "1.5.0"
 
 import argparse
 import json
@@ -487,10 +487,11 @@ class App:
             ("slot", "槽位"),
             ("serial", "序列号"),
             ("wpid", "产品 ID"),
+            ("battery", "电量"),
             ("status", "连接"),
         )
         for row, (key, label) in enumerate(detail_rows):
-            # 6 行均分面板高度，窗口拉高时是行距变松而不是底部堆一大片空白
+            # 7 行均分面板高度，窗口拉高时是行距变松而不是底部堆一大片空白
             detail.grid_rowconfigure(row, weight=1)
             ttk.Label(detail, text=label, foreground="#777").grid(
                 row=row, column=0, sticky="nw", padx=(0, 10)
@@ -513,9 +514,9 @@ class App:
 
         tree_wrap = ttk.Frame(body)
         tree_wrap.pack(side="left", fill="both", expand=True)
-        cols = ("slot", "name", "kind", "serial", "online")
-        headers = ("槽位", "设备名称", "类型", "序列号", "状态")
-        widths = (56, 240, 76, 168, 64)
+        cols = ("slot", "name", "kind", "serial", "battery", "online")
+        headers = ("槽位", "设备名称", "类型", "序列号", "电量", "状态")
+        widths = (56, 220, 76, 168, 96, 64)
         self.tree = ttk.Treeview(tree_wrap, columns=cols, show="headings", height=9, selectmode="browse")
         for c, h, w in zip(cols, headers, widths, strict=True):
             self.tree.heading(c, text=h)
@@ -525,7 +526,7 @@ class App:
                 minwidth=44,
                 # 名称列吸收多余宽度（窗口变宽时优先给设备名，而不是留白）
                 stretch=(c == "name"),
-                anchor="center" if c in ("slot", "kind", "online") else "w",
+                anchor="center" if c in ("slot", "kind", "online", "battery") else "w",
             )
         self.tree.tag_configure("offline", foreground="#999")
         self.tree.tag_configure("odd", background="#f7f7f8")  # 斑马纹：长列表更好扫读
@@ -799,7 +800,7 @@ class App:
                 "",
                 "end",
                 iid=iid,
-                values=(d.slot, d.name, d.kind_label, d.serial or "-", d.status_label),
+                values=(d.slot, d.name, d.kind_label, d.serial or "-", d.battery or "—", d.status_label),
                 tags=tuple(tags),
             )
         if not info.devices:
@@ -838,6 +839,7 @@ class App:
             "slot": str(device.slot) if device else "—",
             "serial": (device.serial or "—") if device else "—",
             "wpid": (device.wpid or "—") if device else "—",
+            "battery": (device.battery or "—") if device else "—",
             "status": device.status_label if device else "—",
         }
         for key, value in values.items():
