@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.6.0"
+__version__ = "1.6.1"
 
 import argparse
 import json
@@ -519,7 +519,9 @@ class App:
         # 固定列宽总和必须留够名称列的空间：窗口默认 980 / 最小 880 时
         # 表格可用宽度分别约 652 / 511，固定列 386 之后名称列还剩 266 / 125
         widths = (48, 220, 64, 130, 88, 56)
-        self._tree_fixed = {"slot": 48, "kind": 64, "serial": 130, "battery": 88, "online": 56}
+        # 电量列不固定：实际宽度由 _fit_battery_column 按当前文本测量
+        # （「85%（放电中）」在 9pt 下约 92px，固定 88px 会把右括号裁掉）
+        self._tree_fixed = {"slot": 48, "kind": 64, "serial": 130, "online": 56}
         self.tree = ttk.Treeview(tree_wrap, columns=cols, show="headings", height=9, selectmode="browse")
         for c, h, w in zip(cols, headers, widths, strict=True):
             self.tree.heading(c, text=h)
@@ -797,12 +799,15 @@ class App:
 
         keep = self.selected_slot()
         self.tree.delete(*self.tree.get_children())
+        battery_texts: list[str] = []
         for idx, d in enumerate(info.devices):
             tags: list[str] = []
             if idx % 2:
                 tags.append("odd")
             if d.online is False:
                 tags.append("offline")
+            if d.battery:
+                battery_texts.append(d.battery)
             iid = str(d.slot)
             self.tree.insert(
                 "",
@@ -811,6 +816,9 @@ class App:
                 values=(d.slot, d.name, d.kind_label, d.serial or "-", d.battery or "—", d.status_label),
                 tags=tuple(tags),
             )
+        self._fit_battery_column(battery_texts)
+        # 电量列宽变了，名称列要跟着重算（<Configure> 不因列宽变化触发）
+        self.root.after_idle(self._fit_tree_columns)
         if not info.devices:
             self.var_sub.set(self.var_sub.get() + "　·　暂无配对设备，可点「添加设备…」")
         if keep is not None and self.tree.exists(str(keep)):
@@ -835,6 +843,16 @@ class App:
         self._update_button_states()
         self.set_status("读取失败：" + message.replace("\n", " "))
 
+    def _fit_battery_column(self, texts: list[str]) -> None:
+        """电量列宽按当前文本实测：空状态回到默认 88，最长不超过 140。"""
+        if not texts:
+            need = 88
+        else:
+            font = tkfont.nametofont("TkDefaultFont")
+            need = min(max(font.measure(t) for t in texts) + 18, 140)
+        if abs(self.tree.column("battery", "width") - need) > 1:
+            self.tree.column("battery", width=need)
+
     def _fit_tree_columns(self, event=None) -> None:
         """按表格实际可用宽度重新分配名称列，保证所有列都不被裁剪。
 
@@ -844,7 +862,10 @@ class App:
         avail = (event.width if event is not None else self.tree.winfo_width()) - 2
         if avail <= 1:
             return
-        name_w = max(avail - sum(self._tree_fixed.values()), 110)
+        fixed = sum(self._tree_fixed.values()) + self.tree.column("battery", "width")
+        # 下限 90：电量列触顶 140 + 最小窗口时，宁可横向压缩名称（超长出省略号），
+        # 也不能把最右侧的「状态」列挤出可视区
+        name_w = max(avail - fixed, 90)
         if abs(self.tree.column("name", "width") - name_w) > 1:
             self.tree.column("name", width=name_w)
 
